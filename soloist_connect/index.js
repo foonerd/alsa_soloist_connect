@@ -48,7 +48,33 @@ SoloistConnect.prototype.onVolumioStart = function () {
   );
   this.config = new VConf();
   this.config.loadFile(configFile);
+  this.ensureConfigDefaults();
   return libQ.resolve();
+};
+
+// Volumio copies the shipped config.json into /data/configuration only when no
+// config exists there. On upgrade the stored config is kept as-is, so a setting
+// added in a later version is absent and get() returns undefined, which reaches
+// the env file as an empty value.
+//
+// requiredConf.json is not the answer: checkRequiredConfigurationParameters
+// calls set() for every key on every plugin load, which would overwrite the
+// user's value with the default at each boot. Seed only what is missing.
+SoloistConnect.prototype.ensureConfigDefaults = function () {
+  let defaults;
+  try {
+    defaults = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+  } catch (e) {
+    this.logger.error('SoloistConnect: cannot read shipped config.json: ' + e.message);
+    return;
+  }
+
+  for (const key of Object.keys(defaults)) {
+    if (this.config.has(key)) continue;
+    const spec = defaults[key];
+    this.logger.info('SoloistConnect: adding missing config key ' + key + ' = ' + spec.value);
+    this.config.addConfigValue(key, spec.type, spec.value);
+  }
 };
 
 SoloistConnect.prototype.getConfigurationFiles = function () {
