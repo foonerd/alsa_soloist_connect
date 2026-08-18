@@ -43,9 +43,13 @@ if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
 fi
 
 export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
+# Caps the buffer our patched apulse requests. volumioswitch keeps its own
+# buffer and sizes its target's buffer from the same request, so the value
+# lands twice in series. Uncapped, that measured 3 s from skip to audio.
+export APULSE_MAX_TLENGTH_MS="${APULSE_MAX_TLENGTH_MS:-500}"
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
-echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE uname=$(uname -m)" >&2
+echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms uname=$(uname -m)" >&2
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME and
 # CACHE_SIZE, and validates them before writing. No conditional assembly here.
