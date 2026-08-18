@@ -20,6 +20,7 @@
           "device_name",
           "initial_volume",
           "cache_size_mb",
+          "buffer_ms",
           "verbose_logging"
         ]
       },
@@ -66,6 +67,22 @@
           "attributes": [
             {
               "min": 0
+            }
+          ]
+        },
+        {
+          "id": "buffer_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.BUFFER_MS",
+          "doc": "TRANSLATE.BUFFER_MS_DOC",
+          "value": 500,
+          "attributes": [
+            {
+              "min": 100
+            },
+            {
+              "max": 2000
             }
           ]
         },

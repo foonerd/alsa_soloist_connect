@@ -12,6 +12,8 @@
   "CACHE_SIZE_DOC": "Maximum playback cache size. Use 0 for unlimited; otherwise minimum 100.",
   "VERBOSE": "Verbose Logging",
   "VERBOSE_DOC": "Enable verbose Soloist logs (journalctl -u soloist).",
+  "BUFFER_MS": "Output Buffer (ms)",
+  "BUFFER_MS_DOC": "How much audio is buffered ahead of the DAC (100-2000). Volumio's ALSA chain applies this value twice, so lower values make skip, seek and pause respond faster. Too low risks dropouts on a busy device. Default 500.",
   "UPDATE_SECTION": "Binary Update",
   "UPDATE_DESC": "Spotify Soloist builds expire 90 days after their build date. The plugin re-downloads automatically when the build expires, but you can also update manually here.",
   "UPDATE_BUTTON": "Update Soloist binary now"

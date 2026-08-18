@@ -209,6 +209,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `DEVICE_NAME="${esc(this.config.get('device_name'))}"`,
     `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
     `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
+    `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
   ];
   if (this.config.get('verbose_logging') === true) {
     lines.push('VERBOSE="true"');
@@ -705,7 +706,8 @@ SoloistConnect.prototype.getUIConfig = function () {
       uiconf.sections[0].content[1].value = self.config.get('device_name') || 'Volumio';
       uiconf.sections[0].content[2].value = self.config.get('initial_volume');
       uiconf.sections[0].content[3].value = self.config.get('cache_size_mb');
-      uiconf.sections[0].content[4].value = self.config.get('verbose_logging') === true;
+      uiconf.sections[0].content[4].value = self.config.get('buffer_ms');
+      uiconf.sections[0].content[5].value = self.config.get('verbose_logging') === true;
       defer.resolve(uiconf);
     })
     .fail((e) => defer.reject(new Error('Failed loading UIConfig: ' + e)));
@@ -728,6 +730,14 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Cache size must be 0 (no limit) or at least 100 MB.' };
   }
 
+  // Bounded because minreq, and therefore the ALSA period, is derived as
+  // tlength/4. Below 100ms the period drops under 25ms and xruns become likely
+  // on a loaded device; 2000ms restores upstream apulse behaviour.
+  const bufferMs = parseInt(data.buffer_ms, 10);
+  if (isNaN(bufferMs) || bufferMs < 100 || bufferMs > 2000) {
+    return { ok: false, message: 'Output buffer must be between 100 and 2000 ms.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -735,6 +745,7 @@ SoloistConnect.prototype.validateSettings = function (data) {
       device_name: (data.device_name || '').trim() || 'Volumio',
       initial_volume: initialVolume,
       cache_size_mb: cacheSize,
+      buffer_ms: bufferMs,
       verbose_logging: !!data.verbose_logging,
     },
   };
@@ -754,6 +765,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('device_name', result.values.device_name);
   this.config.set('initial_volume', result.values.initial_volume);
   this.config.set('cache_size_mb', result.values.cache_size_mb);
+  this.config.set('buffer_ms', result.values.buffer_ms);
   this.config.set('verbose_logging', result.values.verbose_logging);
 
   this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');

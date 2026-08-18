@@ -46,7 +46,8 @@ export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
 # Caps the buffer our patched apulse requests. volumioswitch keeps its own
 # buffer and sizes its target's buffer from the same request, so the value
 # lands twice in series. Uncapped, that measured 3 s from skip to audio.
-export APULSE_MAX_TLENGTH_MS="${APULSE_MAX_TLENGTH_MS:-500}"
+# TLENGTH_MS is written by writeEnvFile() from the plugin's buffer_ms setting.
+export APULSE_MAX_TLENGTH_MS="$TLENGTH_MS"
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
 echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms uname=$(uname -m)" >&2
