@@ -22,6 +22,12 @@ The pinned upstream revision that produced each shipped payload is recorded in
 `soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`, and the build recipe is in
 `docker/` and `scripts/build-apulse.sh`.
 
+**These are modified builds, not stock apulse.** The patches applied are in
+[`patches/`](patches), each carrying its rationale and evidence in its header.
+They are applied in the container against the pinned revision, and the build
+fails if any patch does not apply. MIT permits modification; the licence text
+and copyright notice ship unchanged alongside the binaries.
+
 ### GLib and PCRE2 (statically linked into the apulse libraries)
 
 - GLib: https://gitlab.gnome.org/GNOME/glib

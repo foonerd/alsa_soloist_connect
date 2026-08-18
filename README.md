@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the Docker build matrix that produces the native shim the plugin carries.
 
-> **Alpha, version 0.2.0.**
+> **Alpha, version 0.3.0.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -27,13 +27,16 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a private copy of [apulse](https://github.com/i-rinat/apulse), a PulseAudio client API implementation that talks to ALSA directly, and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 apulse opens `pcm.volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply.
 
+The copy is patched. See [`patches/`](patches) and [Buffering and the ALSA chain](#buffering-and-the-alsa-chain).
+
 ```mermaid
 flowchart LR
     A["Spotify app"] -->|"Spotify Connect"| B["soloist daemon"]
-    B -->|"libpulse.so.0 API"| C["apulse shim"]
+    B -->|"libpulse.so.0 API"| C["apulse shim (patched)"]
     C -->|"ALSA"| D["pcm.volumio"]
-    D --> E["AAMPP chain: softvol, DSP"]
-    E --> F["DAC"]
+    D --> E["volumioswitch"]
+    E --> F["AAMPP chain: softvol, DSP"]
+    F --> G["DAC"]
 ```
 
 Nothing else on the system is touched.
@@ -49,10 +52,10 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
 | `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping. |
-| `soloist_connect/lib/` | Local helpers (`q`, `miniws`, `vconf`) so the plugin has no npm dependencies. |
-| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | apulse payload, built by the Docker matrix. |
+| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | apulse payload, built and installed by the Docker matrix. |
 | `soloist_connect/alsa-lib/LICENSE.apulse` | apulse licence, travels with the binaries it covers. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
+| `patches/` | Patches applied to apulse in the container, in filename order. |
 | `docker/` | One Bookworm Dockerfile per architecture, plus the runner. |
 | `scripts/build-apulse.sh` | Runs inside the container. |
 | `build-matrix.sh` | Builds all three architectures. |
@@ -78,10 +81,12 @@ flowchart LR
     D --> E
     E --> F["scripts/build-apulse.sh"]
     F --> G["clone apulse at pinned ref"]
-    G --> H["cmake with static glib and pcre2"]
-    H --> I["ldd gate"]
-    I --> J["out/ARCH/"]
-    J --> K["soloist_connect/alsa-lib/ARCH/"]
+    G --> H["apply patches/"]
+    H --> I["cmake with static glib and pcre2"]
+    I --> J["ldd gate"]
+    J --> K["out/ARCH/"]
+    K --> L["install into soloist_connect/alsa-lib/ARCH/"]
+    L --> M["verify byte-for-byte"]
 ```
 
 All three architectures:
@@ -89,9 +94,6 @@ All three architectures:
 ```
 cd alsa_soloist_connect
 ./build-matrix.sh
-for a in amd64 arm64 armhf; do
-  cp -a out/$a/. soloist_connect/alsa-lib/$a/
-done
 ```
 
 One architecture:
@@ -100,11 +102,28 @@ One architecture:
 ./docker/run-docker-apulse.sh amd64 --verbose
 ```
 
+The build installs its output into `soloist_connect/alsa-lib/<arch>/` and compares every file byte-for-byte afterwards.
+A mismatch or a missing file fails the build.
+There is no manual copy step, deliberately: when there was one, a stale shim shipped while the build log looked correct, and three rounds of measurement were invalidated before anyone noticed.
+
 Override the source revision when testing:
 
 ```
 APULSE_REF=master ./docker/run-docker-apulse.sh amd64
 ```
+
+### Patches
+
+`patches/*.patch` are applied in the container, in filename order, against the pinned revision.
+A patch that does not apply fails the build rather than silently shipping stock apulse.
+
+| Patch | What |
+|---|---|
+| `0001-apulse-clamp-tlength.patch` | Caps `buffer_attr.tlength` from `APULSE_MAX_TLENGTH_MS`. |
+| `0002-apulse-stream-owns-context-ref.patch` | Fixes a use-after-free that killed the daemon with SIGFPE on every stop. |
+
+Both carry their evidence in the patch header.
+Generate any new patch as a real diff against the patched tree rather than by hand; hand-written line numbers applied with fuzz and shifted the next patch into failing.
 
 ### The ldd gate
 
@@ -157,7 +176,7 @@ Notable points:
 
 - `libatomic1` and `patchelf` are installed if missing.
 - Bookworm's glibc is 2.36 and Soloist needs 2.38 or newer. A private sysroot is sideloaded into `/data/soloist/sysroot` and the binary is ELF-patched against it. The system glibc is left alone. Launching through an explicit `ld-linux` instead of patching breaks Soloist's subprocesses.
-- The unit sets `APULSE_PLAYBACK_DEVICE=plug:volumio`.
+- The unit sets `APULSE_PLAYBACK_DEVICE=plug:volumio`. The launcher additionally exports `APULSE_MAX_TLENGTH_MS` from the plugin's Output Buffer setting.
 - Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; the plugin re-downloads on the next start.
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
@@ -219,15 +238,58 @@ Behaviour worth knowing when reading `index.js`:
 - Volumio's state machine calls `stop()` on volatile services during normal state syncing. While a Connect session is active those calls are ignored.
 - `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
-- Sample rate and bit depth come from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report them.
+- Sample rate and bit depth come from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report them. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
+
+---
+
+## Buffering and the ALSA chain
+
+`pcm.volumio` is not a direct path to the hardware. It resolves through `volumioswitch`, an ioplug that keeps its own buffer **and** separately sizes the buffer of its target PCM from `io->buffer_size`, reporting the sum as its delay:
+
+```c
+*delayp = local_delay + target_delay;
+```
+
+Both stages derive from `buffer_attr.tlength`, so a client's request lands twice, in series. Each stage is capped by the ioplug at `SND_PCM_IOPLUG_HW_BUFFER_BYTES`, 524288 bytes, which is 65536 frames or 1.486 s at 44100 S24_LE stereo. apulse's 2 s default therefore produced about 2.97 s of committed audio.
+
+Measured on a Pi with a HiFiBerry DAC, skip command to first audible frame:
+
+| Output device | Latency |
+|---|---|
+| `plug:volumio` | 3 s |
+| `volumio` (empty passthrough) | 3 s |
+| `volumioMultiRoomServer` (volumioswitch) | 3 s |
+| `volumioLocalPlayback` | 1 s |
+| `softvolume` | 1 to 2 s |
+| `plughw:sndrpihifiberry` | 1 s |
+
+The hardware buffer read 65536 frames in every case, so the extra time is the switch's own buffer, not the endpoint.
+
+Moving the output device down the chain would recover the time and is the wrong fix: every faster path bypasses the contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is the whole reason for entering at `pcm.volumio`. The cap is applied in apulse instead, where it shrinks both stages together because the switch sizes its target from what the client asks for.
+
+At 500 ms the hardware reports `buffer_size` 22050 frames with `period_size` 882, against 65536 and 512 at the default.
+
+`minreq`, and therefore the ALSA period, is `tlength/4`. That sets the useful floor: at 100 ms the period is 25 ms, which is about as low as a loaded Pi tolerates.
+
+One related upstream behaviour is unfixed. apulse implements `pa_stream_flush` as a no-op:
+
+```c
+static void pa_stream_flush_impl(pa_operation *op) {
+    // TODO: is it ok to do nothing?
+```
+
+so a skip discards nothing and the already-committed audio plays out. Confirmed on hardware by sampling `delay` across a skip: it never falls. The buffer cap bounds the symptom rather than removing it.
 
 ---
 
 ## Known limitations
 
 - **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button.
-- **Control latency.** Skip, seek and pause can take noticeably longer to take effect than on a native Spotify Connect device. Under investigation. The leading hypothesis is the output buffer: apulse implements `pa_stream_flush` as a no-op and cannot rewind an ALSA ring the way PulseAudio or PipeWire rewind a mix buffer, so audio already committed downstream keeps playing after a skip. Not yet confirmed by measurement on hardware.
-- **No supported latency control in Soloist.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely.
+- **Skip and seek are not instant.** Bounded by the Output Buffer setting rather than the 3 s it was, because `pa_stream_flush` discards nothing upstream. See [Buffering and the ALSA chain](#buffering-and-the-alsa-chain).
+- **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
+- **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
+- **PeppyMeter will not meter this plugin.** Its per-source metering is hardcoded to the `spop` plugin's paths and config format. The screensaver itself does trigger, via its `Other_ON` branch.
+- **arm64 is unverified at runtime.** Built by the matrix and carries the patches, but only armhf and amd64 have been exercised.
 - armv6 devices are out of scope.
 
 ---
@@ -263,7 +325,7 @@ Summary:
 | Component | Licence | Redistributed here |
 |---|---|---|
 | This project's code | MIT | yes |
-| apulse | MIT | yes, as prebuilt libraries under `soloist_connect/alsa-lib/` |
+| apulse | MIT | yes, as prebuilt libraries under `soloist_connect/alsa-lib/`, patched by `patches/` |
 | GLib | LGPL-2.1-or-later | statically linked into the apulse libraries |
 | PCRE2 | BSD-3-Clause | statically linked into the apulse libraries |
 | PulseAudio public headers | LGPL-2.1-or-later | no, build-time only |

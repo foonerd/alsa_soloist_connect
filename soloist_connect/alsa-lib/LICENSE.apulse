@@ -4,9 +4,15 @@ apulse
 The shared libraries in this directory (libpulse.so.0, libpulse-simple.so.0,
 libpulse-mainloop-glib.so.0, and the apulse launcher) are builds of apulse.
 
+These are MODIFIED builds. Patches are applied to the pinned upstream revision
+before compiling; they live in patches/ in the project repository, each with
+its rationale in its header. MIT permits modification, and the upstream
+copyright notice and licence text below are unchanged.
+
 Upstream: https://github.com/i-rinat/apulse
 Pinned revision: see SOURCE_REVISION in each architecture directory.
-Build recipe: docker/ and scripts/build-apulse.sh in the project repository.
+Build recipe: docker/, scripts/build-apulse.sh and patches/ in the project
+repository.
 
 Copyright (c) 2014-2018 Rinat Ibragimov
 

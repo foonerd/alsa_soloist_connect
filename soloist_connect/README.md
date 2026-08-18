@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.2.0.**
+> **Alpha, version 0.3.0.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -48,6 +48,7 @@ It belongs to the account that generated it and must not be shared.
 | Device name | `Volumio` | The name shown in the Spotify app. |
 | Initial volume | 50 | 0 to 100. |
 | Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
+| Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
 | Verbose logging | off | Adds verbose logging to the daemon. Useful when reporting a problem. |
 
 The settings page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
@@ -87,9 +88,10 @@ This is a Spotify design decision, not a plugin limitation.
 The plugin checks on start and re-downloads automatically, and there is a manual update button.
 A device left powered off past the expiry will refresh on its next start, provided it can reach the internet.
 
-**Control latency.**
-Skip, seek and pause can take longer to take effect than on a native Spotify Connect speaker.
-This is under investigation and is believed to come from buffering below Soloist rather than from the plugin itself.
+**Skip and seek are not instant.**
+Volumio's ALSA chain buffers audio ahead of the DAC, and it applies the Output Buffer setting twice, so the delay is roughly double the value you set.
+Lowering the setting shortens it; too low risks dropouts on a busy device.
+A residual delay remains at any setting, because the audio already sent downstream is played out rather than discarded.
 
 **The Soloist binary is not part of this package.**
 It is downloaded from Spotify's official CDN during install, because Spotify does not permit redistributing it.
