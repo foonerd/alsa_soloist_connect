@@ -31,15 +31,11 @@ echo "========================================"
 echo "Build matrix complete"
 echo "========================================"
 echo ""
-echo "Output:"
+echo "Payload (installed and verified by run-docker-apulse.sh):"
 for ARCH in "${ARCHITECTURES[@]}"; do
-  if [ -d "out/$ARCH" ]; then
-    echo "  out/$ARCH/"
-    ls -lh "out/$ARCH/" 2>/dev/null | tail -n +2 | awk '{printf "    %s  %s\n", $9, $5}'
+  PAYLOAD_DIR="soloist_connect/alsa-lib/$ARCH"
+  if [ -d "$PAYLOAD_DIR" ]; then
+    echo "  $PAYLOAD_DIR/"
+    md5sum "$PAYLOAD_DIR"/libpulse*.so.0 2>/dev/null | sed 's/^/    /'
   fi
 done
-echo ""
-echo "Copy into the plugin payload:"
-echo "  for a in amd64 arm64 armhf; do"
-echo "    cp -a out/\$a/. soloist_connect/alsa-lib/\$a/"
-echo "  done"

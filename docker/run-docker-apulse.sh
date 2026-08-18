@@ -101,6 +101,7 @@ echo ""
 echo "[+] Running build inside container..."
 docker run --rm --platform="$PLATFORM" \
   -v "$REPO_DIR/scripts:/build/scripts:ro" \
+  -v "$REPO_DIR/patches:/build/patches:ro" \
   -v "$REPO_DIR/$OUTPUT_DIR:/build/output" \
   -e "ARCH=$ARCH" \
   -e "LIB_PATH=$LIB_PATH" \
@@ -113,6 +114,42 @@ echo ""
 echo "[+] Build complete for $ARCH"
 echo "[+] Output in: $REPO_DIR/$OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
+
+#
+# Install into the plugin payload.
+#
+# This is not optional and not advice. The payload under soloist_connect/ is
+# what gets zipped and installed on the device; leaving the copy to the caller
+# means a stale shim can ship while the build output looks correct.
+#
+PAYLOAD_DIR="soloist_connect/alsa-lib/$ARCH"
 echo ""
-echo "To update the plugin payload:"
-echo "  cp -a $OUTPUT_DIR/. soloist_connect/alsa-lib/$ARCH/"
+echo "[+] Installing into $PAYLOAD_DIR"
+mkdir -p "$PAYLOAD_DIR"
+cp -a "$OUTPUT_DIR"/. "$PAYLOAD_DIR"/
+
+#
+# Verify byte-for-byte. A mismatch here means the payload is not what was just
+# built, and shipping it would be untraceable.
+#
+FAIL=0
+for f in libpulse.so.0 libpulse-simple.so.0 libpulse-mainloop-glib.so.0 SOURCE_REVISION; do
+  if [ ! -f "$PAYLOAD_DIR/$f" ]; then
+    echo "[!] ERROR: $PAYLOAD_DIR/$f is missing after install"
+    FAIL=1
+    continue
+  fi
+  if ! cmp -s "$OUTPUT_DIR/$f" "$PAYLOAD_DIR/$f"; then
+    echo "[!] ERROR: $f differs between $OUTPUT_DIR and $PAYLOAD_DIR"
+    FAIL=1
+  fi
+done
+
+if [ "$FAIL" -ne 0 ]; then
+  echo "[!] Payload install failed for $ARCH"
+  exit 1
+fi
+
+echo "[+] Payload verified against build output:"
+md5sum "$PAYLOAD_DIR"/libpulse*.so.0
+echo "[+] apulse revision: $(cat "$PAYLOAD_DIR/SOURCE_REVISION")"
