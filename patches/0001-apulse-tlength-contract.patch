@@ -1,0 +1,214 @@
+tlength is the single authority for buffer size on the Volumio chain
+
+Consolidates two patches that were one concern split in half: capping the
+tlength we request, and capping the delay we report. Both follow from the same
+volumioswitch behaviour and neither is meaningful without the other. Verified
+to produce byte-for-byte the same source as the two patches it replaces.
+
+What volumioswitch does
+
+It keeps its own buffer and separately sizes the buffer of its target PCM from
+io->buffer_size:
+
+    if(io->buffer_size > target_buffer_size_min) {
+        if(io->buffer_size > target_buffer_size_max) buffer_size_max = target_buffer_size_max;
+        else buffer_size_max = io->buffer_size;
+    }
+
+and reports the sum of both as its delay:
+
+    *delayp = local_delay + target_delay;
+
+io->buffer_size derives from buffer_attr.tlength, so a client's request lands
+twice, in series. Each stage is capped by the ioplug at
+SND_PCM_IOPLUG_HW_BUFFER_BYTES, 524288 bytes, which is 65536 frames or 1.486 s
+at 44100 S24_LE stereo. apulse's 2 s default therefore produced about 2.97 s of
+committed audio.
+
+Part one: cap what we request
+
+Measured on a Raspberry Pi with a HiFiBerry DAC, skip command to first audible
+frame:
+
+    plug:volumio (full chain)      3 s
+    volumio (empty passthrough)    3 s
+    volumioMultiRoomServer         3 s
+    volumioLocalPlayback           1 s
+    plughw:sndrpihifiberry         1 s
+
+The hardware buffer read 65536 frames in every case, so the extra time is the
+switch's own buffer, not the endpoint. Moving the output device down the chain
+would recover it and is the wrong fix: every faster path bypasses the
+contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is
+the whole reason for entering at pcm.volumio.
+
+APULSE_MAX_TLENGTH_MS caps the request instead, which shrinks both stages
+together because the switch sizes its target from what the client asks for.
+Unset or non-positive leaves upstream behaviour untouched.
+
+Verified on device at 500 ms: hw_params reports buffer_size 22050 frames with
+period_size 882, against 65536 and 512 before.
+
+minreq, and therefore the ALSA period, is tlength/4, so it is clamped alongside
+to keep at least four requests per buffer even when a client set it explicitly
+and the cap shrank tlength underneath it.
+
+Part two: cap what we report
+
+Shrinking the request is not sufficient, because snd_pcm_delay through the
+switch does not follow it:
+
+    cat /proc/asound/card*/pcm*p/sub*/status
+    state: RUNNING
+    delay       : 65120
+    avail       : 416
+    hw_ptr      : 1657248
+    appl_ptr    : 1722368
+
+65120 + 416 = 65536, the ioplug maximum, while the same session's hardware
+hw_params was buffer_size 11025 (250 ms) with period_size 735. The slider moves
+the slave; it does not move what snd_pcm_delay returns through the switch.
+
+apulse forwarded that unchanged in both places a client can see it:
+
+    pa_stream_get_latency:      *r_usec = 1e6 * delay / rate
+    pa_stream_get_timing_info:  read_index = write_index - delay * frame
+
+Soloist steers playback speed from Pulse latency. A 1.48 s report against a
+requested few hundred milliseconds reads as clock error, so it rushes,
+overcorrects, and chops. Observed on device at every buffer setting, lossless or
+not.
+
+stream_reported_delay caps the figure handed back to the requested tlength, or
+to APULSE_MAX_TLENGTH_MS when that is smaller. It changes nothing about ALSA
+rate, format or buffer negotiation, and does not touch do_connect_pcm.
+
+Also replaces the 32-bit multiply in get_latency with pa_bytes_to_usec. On armhf
+1000 * 1000 * 65120 overflows a 32-bit long, so the reported latency was wrong
+before the cap as well.
+
+--- a/src/apulse-stream.c
++++ b/src/apulse-stream.c
+@@ -554,6 +554,27 @@
+ 
+     ba->tlength = MIN(ba->tlength, ba->maxlength);
+ 
++    // Cap the target buffer length when APULSE_MAX_TLENGTH_MS is set.
++    //
++    // On Volumio the chain runs through the volumioswitch ioplug, which keeps
++    // its own buffer and separately sizes the buffer of its target PCM from
++    // io->buffer_size. Both stages derive from tlength, so the default lands
++    // twice in series.
++    //
++    // Applied after defaulting and before minreq and prebuf are derived, so
++    // those stay consistent with the capped value.
++    {
++        const char *max_tlength_ms = getenv("APULSE_MAX_TLENGTH_MS");
++        long ms = max_tlength_ms ? strtol(max_tlength_ms, NULL, 10) : 0;
++
++        if (ms > 0) {
++            size_t cap = pa_usec_to_bytes((pa_usec_t)ms * 1000, &s->ss);
++
++            if (cap >= frame_size && ba->tlength > cap)
++                ba->tlength = cap;
++        }
++    }
++
+     // Minimum request (playback).
+     if (ba->minreq == (uint32_t)-1) {
+         ba->minreq = pa_usec_to_bytes(20 * 1000, &s->ss);
+@@ -563,6 +584,11 @@
+     if (ba->minreq == 0)
+         ba->minreq = frame_size;
+ 
++    // Keep at least four requests per buffer, including when the client set
++    // minreq explicitly and the cap above shrank tlength underneath it.
++    if (ba->minreq > ba->tlength / 4 && ba->tlength / 4 >= frame_size)
++        ba->minreq = ba->tlength / 4;
++
+     // Fragment size (recording).
+     if (ba->fragsize == (uint32_t)-1) {
+         ba->fragsize = pa_usec_to_bytes(20 * 1000, &s->ss);
+@@ -724,19 +750,65 @@
+     return s->idx;
+ }
+ 
++// volumioswitch reports delay = local + target. That figure can sit at
++// the ioplug maximum (65536 frames, ~1.48 s at 44100) even when the
++// client asked for a few hundred milliseconds. Soloist uses Pulse
++// latency to steer playback speed. A 1.5 s report makes it rush, then
++// stall, then chop.
++//
++// Cap the number we hand back to the requested tlength, or to
++// APULSE_MAX_TLENGTH_MS if that is set and smaller. Does not change
++// ALSA rate, format, or buffer negotiation.
++static snd_pcm_sframes_t
++stream_reported_delay(pa_stream *s)
++{
++    snd_pcm_sframes_t delay = 0;
++    const size_t frame_size = pa_frame_size(&s->ss);
++    snd_pcm_sframes_t cap = 0;
++
++    if (s->ph && snd_pcm_delay(s->ph, &delay) < 0)
++        delay = 0;
++    if (delay < 0)
++        delay = 0;
++
++    if (frame_size > 0 && s->buffer_attr.tlength > 0 &&
++        s->buffer_attr.tlength != (uint32_t)-1)
++        cap = (snd_pcm_sframes_t)(s->buffer_attr.tlength / frame_size);
++
++    {
++        const char *max_tlength_ms = getenv("APULSE_MAX_TLENGTH_MS");
++        long ms = max_tlength_ms ? strtol(max_tlength_ms, NULL, 10) : 0;
++
++        if (ms > 0 && s->ss.rate > 0) {
++            snd_pcm_sframes_t env_cap =
++                (snd_pcm_sframes_t)((int64_t)s->ss.rate * ms / 1000);
++
++            if (env_cap > 0 && (cap <= 0 || env_cap < cap))
++                cap = env_cap;
++        }
++    }
++
++    if (cap > 0 && delay > cap)
++        delay = cap;
++
++    return delay;
++}
++
+ APULSE_EXPORT
+ int
+ pa_stream_get_latency(pa_stream *s, pa_usec_t *r_usec, int *negative)
+ {
+     trace_info_f("F %s s=%p\n", __func__, s);
+ 
+-    snd_pcm_sframes_t delay;
++    snd_pcm_sframes_t delay = stream_reported_delay(s);
+ 
+-    if (snd_pcm_delay(s->ph, &delay) < 0)
+-        delay = 0;
++    if (r_usec) {
++        size_t frame_size = pa_frame_size(&s->ss);
+ 
+-    if (r_usec)
+-        *r_usec = 1000 * 1000 * delay / s->ss.rate;
++        *r_usec = frame_size > 0
++                      ? pa_bytes_to_usec((uint64_t)delay * frame_size, &s->ss)
++                      : 0;
++    }
+     if (negative)
+         *negative = 0;
+     return 0;
+@@ -781,10 +853,8 @@
+ {
+     trace_info_f("F %s s=%p\n", __func__, s);
+ 
+-    snd_pcm_sframes_t delay;
++    snd_pcm_sframes_t delay = stream_reported_delay(s);
+ 
+-    if (snd_pcm_delay(s->ph, &delay) < 0)
+-        delay = 0;
+     s->timing_info.read_index =
+         s->timing_info.write_index - delay * pa_frame_size(&s->ss);
+ 

@@ -1,0 +1,53 @@
+Use g_memdup2 in pa_proplist_set
+
+The build emitted a deprecation warning on every compile:
+
+    apulse-proplist.c:82:5: warning: 'g_memdup' is deprecated:
+        Use 'g_memdup2' instead [-Wdeprecated-declarations]
+
+Not just noise. pa_proplist_set takes nbytes as a size_t:
+
+    pa_proplist_set(pa_proplist *p, const char *key, const void *data,
+                    size_t nbytes)
+    ...
+        v->data = g_memdup(data, nbytes);
+
+g_memdup's size parameter is a guint, so on 64-bit the call narrows. That is why
+glib deprecated it: a caller passing more than 4 GB gets a short copy and a heap
+overflow. g_memdup2 takes a gsize and is the documented replacement.
+
+Not reachable here, since the only proplists apulse handles are small key/value
+sets, but it is a one-line correction and a warning nobody ever fixes is a
+warning everybody learns to ignore.
+
+Guarded on GLIB_CHECK_VERSION because g_memdup2 appeared in glib 2.68 and apulse
+declares no minimum glib version of its own:
+
+    pkg_check_modules(REQ glib-2.0 alsa REQUIRED)
+
+Debian Bookworm, the pinned build base, ships 2.74, so the guard is belt and
+braces rather than a live path here. It keeps the patch applicable to an older
+glib rather than trading one broken build for another.
+
+The only call site in the tree; verified with grep across src/.
+
+Independent of 0001 and 0002. Applies on top of either or neither.
+
+--- a/src/apulse-proplist.c
++++ b/src/apulse-proplist.c
+@@ -79,7 +79,15 @@
+     if (!v)
+         return -1;
+ 
++    // g_memdup takes a guint, but nbytes here is a size_t, so the call also
++    // narrows on 64-bit. g_memdup2 takes a gsize and is the documented
++    // replacement. Guarded because it appeared in glib 2.68 and apulse itself
++    // declares no minimum version; Debian Bookworm ships 2.74.
++#if GLIB_CHECK_VERSION(2, 68, 0)
++    v->data = g_memdup2(data, nbytes);
++#else
+     v->data = g_memdup(data, nbytes);
++#endif
+     v->len = nbytes;
+ 
+     g_hash_table_insert(p->ht, strdup(key), v);

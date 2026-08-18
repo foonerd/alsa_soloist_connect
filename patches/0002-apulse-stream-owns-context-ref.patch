@@ -56,7 +56,7 @@ from the table makes that ownership explicit.
 
 --- a/src/apulse-stream.c
 +++ b/src/apulse-stream.c
-@@ -909,6 +909,11 @@ pa_stream_new_with_proplist(pa_context *c, const char *name,
+@@ -953,6 +953,11 @@
      s->state = PA_STREAM_UNCONNECTED;
      s->ss = *ss;
  
@@ -68,7 +68,7 @@ from the table makes that ownership explicit.
      s->idx = c->next_stream_idx++;
      g_hash_table_insert(c->streams_ht, GINT_TO_POINTER(s->idx), s);
  
-@@ -1045,12 +1050,19 @@ pa_stream_unref(pa_stream *s)
+@@ -1089,12 +1094,19 @@
  
      s->ref_cnt--;
      if (s->ref_cnt == 0) {
