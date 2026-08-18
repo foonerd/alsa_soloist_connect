@@ -34,11 +34,12 @@ APULSE_MAX_TLENGTH_MS caps the request, which shrinks both stages together
 because the switch sizes its target from what the client asks for. Unset or
 non-positive leaves upstream behaviour untouched.
 
+Verified on the device at 500 ms: /proc/asound hw_params reports buffer_size
+22050 frames with period_size 882 frames, against 65536 and 512 before.
+
 --- a/src/apulse-stream.c
 +++ b/src/apulse-stream.c
-@@ -552,9 +552,30 @@
-     if (ba->tlength == 0)
-         ba->tlength = frame_size;
+@@ -554,6 +554,27 @@ stream_adjust_buffer_attrs(pa_stream *s, const pa_buffer_attr *attr)
  
      ba->tlength = MIN(ba->tlength, ba->maxlength);
  
@@ -66,9 +67,7 @@ non-positive leaves upstream behaviour untouched.
      // Minimum request (playback).
      if (ba->minreq == (uint32_t)-1) {
          ba->minreq = pa_usec_to_bytes(20 * 1000, &s->ss);
-         ba->minreq = MIN(ba->minreq, ba->tlength / 4);
-     }
-@@ -563,6 +584,12 @@
+@@ -563,6 +584,11 @@ stream_adjust_buffer_attrs(pa_stream *s, const pa_buffer_attr *attr)
      if (ba->minreq == 0)
          ba->minreq = frame_size;
  
@@ -80,4 +79,3 @@ non-positive leaves upstream behaviour untouched.
      // Fragment size (recording).
      if (ba->fragsize == (uint32_t)-1) {
          ba->fragsize = pa_usec_to_bytes(20 * 1000, &s->ss);
-     }
