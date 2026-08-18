@@ -43,10 +43,13 @@ if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
 fi
 
 export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
-# Caps the buffer our patched apulse requests. volumioswitch keeps its own
-# buffer and sizes its target's buffer from the same request, so the value
-# lands twice in series. Uncapped, that measured 3 s from skip to audio.
-# TLENGTH_MS is written by writeEnvFile() from the plugin's buffer_ms setting.
+# Caps the buffer our patched apulse requests, and the Pulse latency it
+# reports. volumioswitch delay is local + target and can sit at ~1.5 s
+# even when the slider has already shrunk the hardware PCM. Unset or 0
+# on an old env file would leave that uncapped.
+case "${TLENGTH_MS:-}" in
+  ''|0|*[!0-9]*) TLENGTH_MS=500 ;;
+esac
 export APULSE_MAX_TLENGTH_MS="$TLENGTH_MS"
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
