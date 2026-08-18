@@ -47,15 +47,17 @@ unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
 echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE uname=$(uname -m)" >&2
 
+# writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME and
+# CACHE_SIZE, and validates them before writing. No conditional assembly here.
 ARGS=(
-  --device-name "${DEVICE_NAME:-Volumio}"
+  --device-name "$DEVICE_NAME"
   --api-key "$API_KEY"
   --data-dir /data/soloist/data
   --cache-dir /data/soloist/cache
   --ws 127.0.0.1:9878
+  --initial-volume "$INITIAL_VOLUME"
+  --cache-size "$CACHE_SIZE"
 )
-[ -n "$INITIAL_VOLUME" ] && ARGS+=(--initial-volume "$INITIAL_VOLUME")
-[ -n "$CACHE_SIZE" ] && ARGS+=(--cache-size "$CACHE_SIZE")
 [ "$VERBOSE" = "true" ] && ARGS+=(--verbose)
 
 if [ -d "$SYSROOT" ]; then

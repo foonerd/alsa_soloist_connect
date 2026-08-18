@@ -1,11 +1,11 @@
 'use strict';
 
-const libQ = require('./lib/q');
+const libQ = require('kew');
 const fs = require('fs');
 const path = require('path');
 const { exec, execSync } = require('child_process');
-const WebSocket = require('./lib/miniws');
-const VConf = require('./lib/vconf');
+const WebSocket = require('ws');
+const VConf = require('v-conf');
 
 const SERVICE_UNIT = 'soloist.service';
 const WS_HOST = '127.0.0.1';
@@ -198,21 +198,18 @@ SoloistConnect.prototype.ensureBinaryFresh = function () {
   return defer.promise;
 };
 
+// Config values are validated at the boundary by validateSettings() before they
+// reach the store, and v-conf enforces the types declared in config.json. This
+// writer therefore trusts the config and does no revalidation.
 SoloistConnect.prototype.writeEnvFile = function () {
   const esc = (v) => String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const initialVolume = parseInt(this.config.get('initial_volume'), 10);
-  const cacheSize = parseInt(this.config.get('cache_size_mb'), 10);
 
   const lines = [
-    `API_KEY="${esc((this.config.get('api_key') || '').trim())}"`,
-    `DEVICE_NAME="${esc(this.config.get('device_name') || 'Volumio')}"`,
+    `API_KEY="${esc(this.config.get('api_key'))}"`,
+    `DEVICE_NAME="${esc(this.config.get('device_name'))}"`,
+    `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
+    `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
   ];
-  if (!isNaN(initialVolume) && initialVolume >= 0 && initialVolume <= 100) {
-    lines.push(`INITIAL_VOLUME="${initialVolume}"`);
-  }
-  if (!isNaN(cacheSize) && (cacheSize === 0 || cacheSize >= 100)) {
-    lines.push(`CACHE_SIZE="${cacheSize}"`);
-  }
   if (this.config.get('verbose_logging') === true) {
     lines.push('VERBOSE="true"');
   }
@@ -269,12 +266,16 @@ SoloistConnect.prototype.disconnectWebSocket = function () {
   if (this.ws) {
     try {
       this.ws.removeAllListeners();
-      // A socket being torn down (or a daemon being stopped at the same time)
-      // can still emit 'error'; with no listener that would crash Volumio.
-      this.ws.on('error', () => {});
+      // ws closes cleanly, but the socket can still fail while it is being torn
+      // down (e.g. the daemon is stopped at the same moment). An 'error' with no
+      // listener on an EventEmitter throws and would take Volumio down, so log
+      // it rather than swallow it.
+      this.ws.on('error', (e) => {
+        this.logger.warn('SoloistConnect: error while closing WebSocket: ' + e.message);
+      });
       this.ws.close();
     } catch (e) {
-      /* ignore */
+      this.logger.warn('SoloistConnect: WebSocket close failed: ' + e.message);
     }
     this.ws = null;
   }
@@ -712,13 +713,48 @@ SoloistConnect.prototype.getUIConfig = function () {
   return defer.promise;
 };
 
+// Validate before writing. v-conf enforces the type declared in config.json and
+// throws on a non-numeric value, so a cleared number field must be rejected here
+// with a message rather than reaching the config store. Returning early leaves
+// the stored settings untouched and the daemon running on the last good values.
+SoloistConnect.prototype.validateSettings = function (data) {
+  const initialVolume = parseInt(data.initial_volume, 10);
+  if (isNaN(initialVolume) || initialVolume < 0 || initialVolume > 100) {
+    return { ok: false, message: 'Initial volume must be a number between 0 and 100.' };
+  }
+
+  const cacheSize = parseInt(data.cache_size_mb, 10);
+  if (isNaN(cacheSize) || (cacheSize !== 0 && cacheSize < 100)) {
+    return { ok: false, message: 'Cache size must be 0 (no limit) or at least 100 MB.' };
+  }
+
+  return {
+    ok: true,
+    values: {
+      api_key: (data.api_key || '').trim(),
+      device_name: (data.device_name || '').trim() || 'Volumio',
+      initial_volume: initialVolume,
+      cache_size_mb: cacheSize,
+      verbose_logging: !!data.verbose_logging,
+    },
+  };
+};
+
 SoloistConnect.prototype.saveSoloistSettings = function (data) {
   const self = this;
-  this.config.set('api_key', (data.api_key || '').trim());
-  this.config.set('device_name', data.device_name || 'Volumio');
-  this.config.set('initial_volume', parseInt(data.initial_volume, 10));
-  this.config.set('cache_size_mb', parseInt(data.cache_size_mb, 10));
-  this.config.set('verbose_logging', !!data.verbose_logging);
+
+  const result = this.validateSettings(data);
+  if (!result.ok) {
+    this.logger.error('SoloistConnect: rejected settings: ' + result.message);
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', result.message);
+    return libQ.resolve();
+  }
+
+  this.config.set('api_key', result.values.api_key);
+  this.config.set('device_name', result.values.device_name);
+  this.config.set('initial_volume', result.values.initial_volume);
+  this.config.set('cache_size_mb', result.values.cache_size_mb);
+  this.config.set('verbose_logging', result.values.verbose_logging);
 
   this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');
   return this.startDaemon()

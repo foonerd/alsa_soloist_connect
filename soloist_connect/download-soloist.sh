@@ -44,7 +44,9 @@ esac
 echo "Downloading Spotify Soloist for userspace $ARCH (uname=$(uname -m) dpkg=$(dpkg --print-architecture 2>/dev/null || echo ?) bits=$(getconf LONG_BIT 2>/dev/null || echo ?)) ..."
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-curl -fSL --retry 3 -o "$TMP/soloist.tar.gz" "$URL"
+# --http1.1 is required. On Volumio 4 armhf the CDN's HTTP/2 stream aborts
+# mid-transfer with curl (92) PROTOCOL_ERROR, reproducibly at ~2 MB.
+curl --http1.1 -fSL --retry 3 -o "$TMP/soloist.tar.gz" "$URL"
 tar -xzf "$TMP/soloist.tar.gz" -C "$TMP"
 
 SOLOIST_BIN=$(find "$TMP" -type f -name soloist | head -n 1)

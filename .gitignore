@@ -3,6 +3,10 @@ out/
 build/
 *.o
 
+# npm
+node_modules/
+package-lock.json
+
 # Packaged plugin archives
 *.zip
 
