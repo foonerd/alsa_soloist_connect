@@ -31,6 +31,7 @@ function SoloistConnect(context) {
   this.ignoreStopEvent = false;
   this.state = this.emptyState();
   this.positionAnchor = { position_ms: 0, timestamp_ms: Date.now(), speed: 0 };
+  this.seekTimer = null;
   this.pushStateTimer = null;
   this.pushStateDirty = false;
   this.volumeTimer = null;
@@ -463,8 +464,8 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'playback_state':
       this.updateActive(msg);
-      if (msg.position) this.positionAnchor = msg.position;
       this.setStatus(msg.status);
+      this.applyPosition(msg.position);
       if (msg.item) this.applyItem(msg.item);
       if (typeof msg.volume === 'number') this.applySoloistVolume(msg.volume);
       this.schedulePushState();
@@ -486,11 +487,17 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       break;
 
     case 'position_sync':
-      // Seek only. A full servicePushState here used to sit on the
-      // coalesced timer and delay track_changed / skip UI until the next
-      // Soloist tick (seconds).
-      if (msg.position) this.positionAnchor = msg.position;
-      this.state.seek = this.currentSeekMs();
+      // Update the anchor only. A full push here used to sit on the
+      // coalesced timer and delay skip UI. The seek timer publishes
+      // the moving bar; a large jump (user seek) pushes immediately.
+      {
+        const before = this.currentSeekMs();
+        this.applyPosition(msg.position);
+        this.state.seek = this.currentSeekMs();
+        if (this.volatileSet && Math.abs(this.state.seek - before) > 2000) {
+          this.commandRouter.servicePushState(this.state, this.servicename);
+        }
+      }
       break;
 
     default:
@@ -504,6 +511,7 @@ SoloistConnect.prototype.setStatus = function (soloistStatus) {
     this.lastPlayTransitionAt = Date.now();
   }
   this.state.status = mapped;
+  this.syncSeekTimer();
 };
 
 SoloistConnect.prototype.mapStatus = function (s) {
@@ -552,9 +560,62 @@ SoloistConnect.prototype.applyItem = function (item) {
   this.state.albumart = art || '/albumart';
 };
 
+SoloistConnect.prototype.applyPosition = function (pos) {
+  if (pos == null) return;
+  if (typeof pos === 'number' && Number.isFinite(pos)) {
+    this.positionAnchor = {
+      position_ms: pos,
+      timestamp_ms: Date.now(),
+      speed: this.state.status === 'play' ? 1 : 0,
+    };
+    return;
+  }
+  if (typeof pos !== 'object') return;
+  const positionMs = Number(
+    pos.position_ms != null ? pos.position_ms : pos.position
+  );
+  if (!Number.isFinite(positionMs)) return;
+  const timestampMs = Number(pos.timestamp_ms);
+  this.positionAnchor = {
+    position_ms: positionMs,
+    timestamp_ms: Number.isFinite(timestampMs) ? timestampMs : Date.now(),
+    speed: this.state.status === 'play' ? 1 : 0,
+  };
+};
+
 SoloistConnect.prototype.currentSeekMs = function () {
   const a = this.positionAnchor;
-  return Math.max(0, Math.round(a.position_ms + (Date.now() - a.timestamp_ms) * (a.speed || 0)));
+  const speed = this.state.status === 'play' ? 1 : 0;
+  return Math.max(
+    0,
+    Math.round((a.position_ms || 0) + (Date.now() - a.timestamp_ms) * speed)
+  );
+};
+
+// Volatile getState() returns a snapshot. The UI does not advance seek
+// on its own. Tick locally and push once a second while playing.
+SoloistConnect.prototype.syncSeekTimer = function () {
+  if (this.state.status === 'play' && this.active) {
+    if (this.seekTimer) return;
+    this.seekTimer = setInterval(() => {
+      if (this.state.status !== 'play' || !this.active) {
+        this.stopSeekTimer();
+        return;
+      }
+      this.state.seek = this.currentSeekMs();
+      if (this.volatileSet) {
+        this.commandRouter.servicePushState(this.state, this.servicename);
+      }
+    }, 1000);
+    return;
+  }
+  this.stopSeekTimer();
+};
+
+SoloistConnect.prototype.stopSeekTimer = function () {
+  if (!this.seekTimer) return;
+  clearInterval(this.seekTimer);
+  this.seekTimer = null;
 };
 
 SoloistConnect.prototype.emptyState = function () {
@@ -635,6 +696,7 @@ SoloistConnect.prototype.unsetVolatile = function () {
     this.pushStateTimer = null;
   }
   this.pushStateDirty = false;
+  this.stopSeekTimer();
   this.state = this.emptyState();
   try {
     this.context.coreCommand.stateMachine.unSetVolatile();
@@ -716,6 +778,7 @@ SoloistConnect.prototype.repeat = function (value, repeatSingle) {
 };
 
 SoloistConnect.prototype.getState = function () {
+  this.state.seek = this.currentSeekMs();
   return this.state;
 };
 
