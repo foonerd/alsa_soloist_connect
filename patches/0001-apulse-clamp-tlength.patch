@@ -1,0 +1,83 @@
+Cap the requested PulseAudio tlength from the environment
+
+On Volumio the playback chain runs through the volumioswitch ioplug. That
+plugin keeps its own buffer and separately sizes the buffer of its target PCM
+from io->buffer_size:
+
+    if(io->buffer_size > target_buffer_size_min) {
+        if(io->buffer_size > target_buffer_size_max) buffer_size_max = target_buffer_size_max;
+        else buffer_size_max = io->buffer_size;
+    }
+
+and reports the sum of both as its delay:
+
+    *delayp = local_delay + target_delay;
+
+io->buffer_size derives from buffer_attr.tlength. apulse's 2 s default is
+therefore applied twice, in series. The ioplug caps each stage at
+SND_PCM_IOPLUG_HW_BUFFER_BYTES (524288 bytes, 65536 frames at S24_LE stereo,
+1.486 s at 44100), so the pipeline holds about 2.97 s.
+
+Measured on a Raspberry Pi with a HiFiBerry DAC, from a skip command to the
+first audible frame of the new track:
+
+    plug:volumio (full chain)      3 s
+    volumio (empty passthrough)    3 s
+    volumioMultiRoomServer         3 s
+    volumioLocalPlayback           1 s
+    plughw:sndrpihifiberry         1 s
+
+The hardware buffer measured 65536 frames in every case, so the difference is
+the switch's own buffer, not the endpoint.
+
+APULSE_MAX_TLENGTH_MS caps the request, which shrinks both stages together
+because the switch sizes its target from what the client asks for. Unset or
+non-positive leaves upstream behaviour untouched.
+
+--- a/src/apulse-stream.c
++++ b/src/apulse-stream.c
+@@ -552,9 +552,30 @@
+     if (ba->tlength == 0)
+         ba->tlength = frame_size;
+ 
+     ba->tlength = MIN(ba->tlength, ba->maxlength);
+ 
++    // Cap the target buffer length when APULSE_MAX_TLENGTH_MS is set.
++    //
++    // On Volumio the chain runs through the volumioswitch ioplug, which keeps
++    // its own buffer and separately sizes the buffer of its target PCM from
++    // io->buffer_size. Both stages derive from tlength, so the default lands
++    // twice in series.
++    //
++    // Applied after defaulting and before minreq and prebuf are derived, so
++    // those stay consistent with the capped value.
++    {
++        const char *max_tlength_ms = getenv("APULSE_MAX_TLENGTH_MS");
++        long ms = max_tlength_ms ? strtol(max_tlength_ms, NULL, 10) : 0;
++
++        if (ms > 0) {
++            size_t cap = pa_usec_to_bytes((pa_usec_t)ms * 1000, &s->ss);
++
++            if (cap >= frame_size && ba->tlength > cap)
++                ba->tlength = cap;
++        }
++    }
++
+     // Minimum request (playback).
+     if (ba->minreq == (uint32_t)-1) {
+         ba->minreq = pa_usec_to_bytes(20 * 1000, &s->ss);
+         ba->minreq = MIN(ba->minreq, ba->tlength / 4);
+     }
+@@ -563,6 +584,12 @@
+     if (ba->minreq == 0)
+         ba->minreq = frame_size;
+ 
++    // Keep at least four requests per buffer, including when the client set
++    // minreq explicitly and the cap above shrank tlength underneath it.
++    if (ba->minreq > ba->tlength / 4 && ba->tlength / 4 >= frame_size)
++        ba->minreq = ba->tlength / 4;
++
+     // Fragment size (recording).
+     if (ba->fragsize == (uint32_t)-1) {
+         ba->fragsize = pa_usec_to_bytes(20 * 1000, &s->ss);
+     }

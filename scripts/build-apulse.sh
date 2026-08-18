@@ -33,6 +33,29 @@ git checkout "${APULSE_REF:-5d654cecd18474b4e0d885e774bc41fcbbc9818b}"
 echo "[+] apulse at $(git rev-parse --short HEAD) ($(git log -1 --format=%s))"
 
 #
+# Step 1b: apply local patches
+#
+# Applied in filename order against the pinned revision. A patch that does not
+# apply is a hard failure: shipping an unpatched shim would silently restore
+# upstream buffering behaviour.
+#
+PATCH_DIR="$BUILD_BASE/patches"
+if [ -d "$PATCH_DIR" ]; then
+  git checkout -- .
+  for patch in "$PATCH_DIR"/*.patch; do
+    [ -e "$patch" ] || continue
+    echo "[+] Applying $(basename "$patch")"
+    if ! patch -p1 --forward --batch < "$patch"; then
+      echo "[!] ERROR: $(basename "$patch") did not apply to $(git rev-parse --short HEAD)"
+      exit 1
+    fi
+  done
+else
+  echo "[!] ERROR: no patch directory at $PATCH_DIR"
+  exit 1
+fi
+
+#
 # Step 2: locate static glib + pcre2 (not on Volumio; must not be dynamic)
 #
 GLIB_A=$(find /usr -name 'libglib-2.0.a' 2>/dev/null | head -1)
