@@ -121,6 +121,7 @@ A patch that does not apply fails the build rather than silently shipping stock 
 |---|---|
 | `0001-apulse-clamp-tlength.patch` | Caps `buffer_attr.tlength` from `APULSE_MAX_TLENGTH_MS`. |
 | `0002-apulse-stream-owns-context-ref.patch` | Fixes a use-after-free that killed the daemon with SIGFPE on every stop. |
+| `0003-apulse-cap-reported-latency.patch` | Caps Pulse `get_latency` / `get_timing_info` to the same tlength. Does not touch ALSA rate negotiation. |
 
 Both carry their evidence in the patch header.
 Generate any new patch as a real diff against the patched tree rather than by hand; hand-written line numbers applied with fuzz and shifted the next patch into failing.
@@ -268,6 +269,8 @@ The hardware buffer read 65536 frames in every case, so the extra time is the sw
 Moving the output device down the chain would recover the time and is the wrong fix: every faster path bypasses the contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is the whole reason for entering at `pcm.volumio`. The cap is applied in apulse instead, where it shrinks both stages together because the switch sizes its target from what the client asks for.
 
 At 500 ms the hardware reports `buffer_size` 22050 frames with `period_size` 882, against 65536 and 512 at the default.
+
+The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency and steers speed from it. `0003-apulse-cap-reported-latency.patch` caps the Pulse figure, not the `/proc/asound` `delay` line.
 
 `minreq`, and therefore the ALSA period, is `tlength/4`. That sets the useful floor: at 100 ms the period is 25 ms, which is about as low as a loaded Pi tolerates.
 
