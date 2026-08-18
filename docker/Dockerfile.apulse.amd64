@@ -1,0 +1,25 @@
+FROM debian:bookworm
+
+# Build environment for the apulse Pulse-to-ALSA shim.
+#
+# Debian Bookworm amd64, matching Volumio 4's base, so the binaries link
+# against the same glibc the target has.
+#
+# libglib2.0 is a build-time dependency of apulse and is NOT on a stock
+# Volumio image (VolumioBase.conf). The build script statically links
+# glib + pcre2 and fails if they end up dynamic. libasound2 is allowed.
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    pkg-config \
+    libasound2-dev \
+    libglib2.0-dev \
+    libpcre2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build

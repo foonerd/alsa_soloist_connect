@@ -1,0 +1,105 @@
+{
+  "page": {
+    "label": "TRANSLATE.PLUGIN_NAME"
+  },
+  "sections": [
+    {
+      "id": "soloist_settings",
+      "element": "section",
+      "label": "TRANSLATE.SETTINGS",
+      "icon": "fa-spotify",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE",
+        "data": [
+          "api_key",
+          "device_name",
+          "initial_volume",
+          "cache_size_mb",
+          "verbose_logging"
+        ]
+      },
+      "content": [
+        {
+          "id": "api_key",
+          "element": "input",
+          "type": "password",
+          "label": "TRANSLATE.API_KEY",
+          "doc": "TRANSLATE.API_KEY_DOC",
+          "value": ""
+        },
+        {
+          "id": "device_name",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.DEVICE_NAME",
+          "doc": "TRANSLATE.DEVICE_NAME_DOC",
+          "value": "Volumio"
+        },
+        {
+          "id": "initial_volume",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.INITIAL_VOLUME",
+          "doc": "TRANSLATE.INITIAL_VOLUME_DOC",
+          "value": 50,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 100
+            }
+          ]
+        },
+        {
+          "id": "cache_size_mb",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.CACHE_SIZE",
+          "doc": "TRANSLATE.CACHE_SIZE_DOC",
+          "value": 1024,
+          "attributes": [
+            {
+              "min": 0
+            }
+          ]
+        },
+        {
+          "id": "verbose_logging",
+          "element": "switch",
+          "label": "TRANSLATE.VERBOSE",
+          "doc": "TRANSLATE.VERBOSE_DOC",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "soloist_update",
+      "element": "section",
+      "label": "TRANSLATE.UPDATE_SECTION",
+      "icon": "fa-refresh",
+      "description": "TRANSLATE.UPDATE_DESC",
+      "content": [
+        {
+          "id": "update_binary",
+          "element": "button",
+          "label": "TRANSLATE.UPDATE_BUTTON",
+          "onClick": {
+            "type": "emit",
+            "message": "callMethod",
+            "data": {
+              "endpoint": "music_service/soloist_connect",
+              "method": "updateSoloistBinary",
+              "data": {}
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

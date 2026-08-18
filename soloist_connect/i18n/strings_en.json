@@ -1,0 +1,18 @@
+{
+  "PLUGIN_NAME": "Spotify Soloist Connect",
+  "SETTINGS": "Soloist Settings",
+  "SAVE": "Save & Restart Soloist",
+  "API_KEY": "Soloist API Key",
+  "API_KEY_DOC": "Generate your own key at developer.spotify.com > Dashboard > Spotify Soloist API Key. A Premium account is required to generate the key. Keep it secret.",
+  "DEVICE_NAME": "Device Name",
+  "DEVICE_NAME_DOC": "The name shown in the Spotify app's device list.",
+  "INITIAL_VOLUME": "Initial Volume (0-100)",
+  "INITIAL_VOLUME_DOC": "Connect-side volume when Soloist starts (0-100). System loudness is the Volumio mixer on pcm.volumio.",
+  "CACHE_SIZE": "Cache Size (MB)",
+  "CACHE_SIZE_DOC": "Maximum playback cache size. Use 0 for unlimited; otherwise minimum 100.",
+  "VERBOSE": "Verbose Logging",
+  "VERBOSE_DOC": "Enable verbose Soloist logs (journalctl -u soloist).",
+  "UPDATE_SECTION": "Binary Update",
+  "UPDATE_DESC": "Spotify Soloist builds expire 90 days after their build date. The plugin re-downloads automatically when the build expires, but you can also update manually here.",
+  "UPDATE_BUTTON": "Update Soloist binary now"
+}

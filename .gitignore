@@ -1,0 +1,16 @@
+# Build output
+out/
+build/
+*.o
+
+# Packaged plugin archives
+*.zip
+
+# The Soloist binary is proprietary Spotify software and is downloaded from
+# Spotify's CDN at install time. It must never be committed or packaged.
+soloist_connect/bin/
+**/bin/soloist
+
+# Local scratch
+*.log
+.DS_Store

@@ -1,0 +1,19 @@
+FROM arm32v7/debian:bookworm
+
+# Native armhf container. Same package set as the amd64 image.
+# libglib2.0 is build-time only; the build script statically links it.
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    pkg-config \
+    libasound2-dev \
+    libglib2.0-dev \
+    libpcre2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build

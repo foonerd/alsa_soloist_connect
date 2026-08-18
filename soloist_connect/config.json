@@ -1,0 +1,22 @@
+{
+  "api_key": {
+    "type": "string",
+    "value": ""
+  },
+  "device_name": {
+    "type": "string",
+    "value": "Volumio"
+  },
+  "initial_volume": {
+    "type": "number",
+    "value": 50
+  },
+  "cache_size_mb": {
+    "type": "number",
+    "value": 1024
+  },
+  "verbose_logging": {
+    "type": "boolean",
+    "value": false
+  }
+}
