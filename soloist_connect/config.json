@@ -19,6 +19,10 @@
     "type": "number",
     "value": 500
   },
+  "retain_api_key": {
+    "type": "boolean",
+    "value": true
+  },
   "verbose_logging": {
     "type": "boolean",
     "value": false

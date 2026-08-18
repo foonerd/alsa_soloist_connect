@@ -21,6 +21,7 @@
           "initial_volume",
           "cache_size_mb",
           "buffer_ms",
+          "retain_api_key",
           "verbose_logging"
         ]
       },
@@ -32,6 +33,13 @@
           "label": "TRANSLATE.API_KEY",
           "doc": "TRANSLATE.API_KEY_DOC",
           "value": ""
+        },
+        {
+          "id": "retain_api_key",
+          "element": "switch",
+          "label": "TRANSLATE.RETAIN_API_KEY",
+          "doc": "TRANSLATE.RETAIN_API_KEY_DOC",
+          "value": true
         },
         {
           "id": "device_name",

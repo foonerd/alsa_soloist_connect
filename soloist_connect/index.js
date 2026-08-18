@@ -10,6 +10,7 @@ const VConf = require('v-conf');
 const SERVICE_UNIT = 'soloist.service';
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 9878; // fixed local port for the Soloist WebSocket API
+const ENV_FILE = '/data/soloist/soloist.env';
 // data/cache dirs are fixed in launch-soloist.sh
 
 module.exports = SoloistConnect;
@@ -49,7 +50,42 @@ SoloistConnect.prototype.onVolumioStart = function () {
   this.config = new VConf();
   this.config.loadFile(configFile);
   this.ensureConfigDefaults();
+  this.restoreRetainedApiKey();
   return libQ.resolve();
+};
+
+// Uninstall deletes /data/configuration/music_service/soloist_connect wholesale
+// (removePluginFromConfiguration runs rm -rf on it), so the API key cannot
+// survive there. With "Retain my API key" on, uninstall.sh preserves
+// /data/soloist/soloist.env and /data/soloist/data instead. On a fresh install
+// the config has no key but the env file still does, so restore it.
+//
+// The env file is mode 0600 and owned by volumio, the same user this process
+// runs as. Nothing is logged but the fact that a key was restored.
+SoloistConnect.prototype.restoreRetainedApiKey = function () {
+  if ((this.config.get('api_key') || '').trim()) return;
+
+  let env;
+  try {
+    env = fs.readFileSync(ENV_FILE, 'utf8');
+  } catch (e) {
+    return; // no retained state, which is the normal first-install case
+  }
+
+  const m = env.match(/^API_KEY="((?:[^"\\]|\\.)*)"$/m);
+  if (!m) return;
+
+  const key = m[1].replace(/\\(.)/g, '$1').trim();
+  if (!key) return;
+
+  this.logger.info('SoloistConnect: restoring retained API key from ' + ENV_FILE);
+  this.config.set('api_key', key);
+
+  const name = env.match(/^DEVICE_NAME="((?:[^"\\]|\\.)*)"$/m);
+  if (name) {
+    const deviceName = name[1].replace(/\\(.)/g, '$1').trim();
+    if (deviceName) this.config.set('device_name', deviceName);
+  }
 };
 
 // Volumio copies the shipped config.json into /data/configuration only when no
@@ -236,13 +272,16 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
     `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
     `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
+    // Read by uninstall.sh, which runs after the plugin config has been
+    // rendered unreadable and cannot consult it.
+    `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
   ];
   if (this.config.get('verbose_logging') === true) {
     lines.push('VERBOSE="true"');
   }
 
   fs.mkdirSync('/data/soloist', { recursive: true });
-  fs.writeFileSync('/data/soloist/soloist.env', lines.join('\n') + '\n', { mode: 0o600 });
+  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
 };
 
 // ---------------------------------------------------------------------------
@@ -728,12 +767,20 @@ SoloistConnect.prototype.getUIConfig = function () {
       path.join(__dirname, 'UIConfig.json')
     )
     .then((uiconf) => {
-      uiconf.sections[0].content[0].value = self.config.get('api_key') || '';
-      uiconf.sections[0].content[1].value = self.config.get('device_name') || 'Volumio';
-      uiconf.sections[0].content[2].value = self.config.get('initial_volume');
-      uiconf.sections[0].content[3].value = self.config.get('cache_size_mb');
-      uiconf.sections[0].content[4].value = self.config.get('buffer_ms');
-      uiconf.sections[0].content[5].value = self.config.get('verbose_logging') === true;
+      // Look up by id rather than by position. Inserting a field mid-list
+      // silently shifted every index below it.
+      const set = (id, value) => {
+        const el = uiconf.sections[0].content.find((c) => c.id === id);
+        if (el) el.value = value;
+      };
+
+      set('api_key', self.config.get('api_key') || '');
+      set('retain_api_key', self.config.get('retain_api_key') === true);
+      set('device_name', self.config.get('device_name') || 'Volumio');
+      set('initial_volume', self.config.get('initial_volume'));
+      set('cache_size_mb', self.config.get('cache_size_mb'));
+      set('buffer_ms', self.config.get('buffer_ms'));
+      set('verbose_logging', self.config.get('verbose_logging') === true);
       defer.resolve(uiconf);
     })
     .fail((e) => defer.reject(new Error('Failed loading UIConfig: ' + e)));
@@ -772,6 +819,7 @@ SoloistConnect.prototype.validateSettings = function (data) {
       initial_volume: initialVolume,
       cache_size_mb: cacheSize,
       buffer_ms: bufferMs,
+      retain_api_key: !!data.retain_api_key,
       verbose_logging: !!data.verbose_logging,
     },
   };
@@ -792,6 +840,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('initial_volume', result.values.initial_volume);
   this.config.set('cache_size_mb', result.values.cache_size_mb);
   this.config.set('buffer_ms', result.values.buffer_ms);
+  this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('verbose_logging', result.values.verbose_logging);
 
   this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');

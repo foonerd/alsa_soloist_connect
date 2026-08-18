@@ -4,6 +4,8 @@
   "SAVE": "Save & Restart Soloist",
   "API_KEY": "Soloist API Key",
   "API_KEY_DOC": "Generate your own key at developer.spotify.com > Dashboard > Spotify Soloist API Key. A Premium account is required to generate the key. Keep it secret.",
+  "RETAIN_API_KEY": "Retain my API key",
+  "RETAIN_API_KEY_DOC": "Keep your API key and paired Spotify session on this device if the plugin is uninstalled, so reinstalling does not require re-entering the key or pairing again. Turn this off to erase everything on uninstall.",
   "DEVICE_NAME": "Device Name",
   "DEVICE_NAME_DOC": "The name shown in the Spotify app's device list.",
   "INITIAL_VOLUME": "Initial Volume (0-100)",
