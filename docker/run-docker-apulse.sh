@@ -90,6 +90,32 @@ echo ""
 
 mkdir -p "$OUTPUT_DIR"
 
+#
+# The payload manifest. One list, used for the copy, the verify and the prune.
+#
+# Declared rather than inferred because the install used to be
+# `cp -a out/<arch>/. payload/`, which shipped whatever happened to be lying
+# in out/. That is how a compiled test binary (pulse_clock_contract, 18 KB)
+# and upstream's own launcher script ended up in the plugin package: out/ is
+# not cleaned between builds, so any artefact that ever landed there shipped
+# forever, including after the source that produced it was deleted.
+#
+# apulse (upstream's launcher) is deliberately excluded. It hardcodes
+# /usr/local/lib/apulse, which does not exist on Volumio, and
+# launch-soloist.sh sets LD_LIBRARY_PATH itself.
+#
+# Keep this list and alsa-lib/SOURCE.md in agreement.
+PAYLOAD_FILES=(
+  libpulse.so.0
+  libpulse-simple.so.0
+  libpulse-mainloop-glib.so.0
+  SOURCE_REVISION
+)
+
+# Start from empty so a stale artefact cannot survive into the next build.
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+
 # Pin / override the apulse source the same way ch341 overrides git refs.
 APULSE_REPO="${APULSE_REPO:-https://github.com/i-rinat/apulse.git}"
 # Commit that produced the shipped alsa-lib/* payload (ldd-clean on Bookworm).
@@ -126,14 +152,40 @@ PAYLOAD_DIR="soloist_connect/alsa-lib/$ARCH"
 echo ""
 echo "[+] Installing into $PAYLOAD_DIR"
 mkdir -p "$PAYLOAD_DIR"
-cp -a "$OUTPUT_DIR"/. "$PAYLOAD_DIR"/
+
+# Copy only what the manifest declares.
+for f in "${PAYLOAD_FILES[@]}"; do
+  if [ ! -f "$OUTPUT_DIR/$f" ]; then
+    echo "[!] ERROR: build did not produce $OUTPUT_DIR/$f"
+    exit 1
+  fi
+  cp -a "$OUTPUT_DIR/$f" "$PAYLOAD_DIR/$f"
+done
+
+# Remove anything in the payload that the manifest does not declare, so a file
+# added by an earlier build cannot linger and ship.
+for existing in "$PAYLOAD_DIR"/*; do
+  [ -e "$existing" ] || continue
+  name="$(basename "$existing")"
+  keep=0
+  for f in "${PAYLOAD_FILES[@]}"; do
+    if [ "$name" = "$f" ]; then
+      keep=1
+      break
+    fi
+  done
+  if [ "$keep" -eq 0 ]; then
+    echo "[+] Removing undeclared payload file: $name"
+    rm -rf "$existing"
+  fi
+done
 
 #
 # Verify byte-for-byte. A mismatch here means the payload is not what was just
 # built, and shipping it would be untraceable.
 #
 FAIL=0
-for f in libpulse.so.0 libpulse-simple.so.0 libpulse-mainloop-glib.so.0 SOURCE_REVISION; do
+for f in "${PAYLOAD_FILES[@]}"; do
   if [ ! -f "$PAYLOAD_DIR/$f" ]; then
     echo "[!] ERROR: $PAYLOAD_DIR/$f is missing after install"
     FAIL=1
