@@ -34,12 +34,26 @@ mkdir -p "$OUTPUT_DIR"
 # what we added, and git format-patch 5d654ce..HEAD produces submissions for the
 # four fixes that are upstream bugs rather than Volumio policy.
 #
-# HTTPS deliberately: the container has no SSH key, and the fork is public.
+# The repository and commit come from the caller. See below.
 #
 echo "[+] Cloning apulse..."
 cd "$BUILD_BASE"
-APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
-APULSE_REF="${APULSE_REF:-b8ffd4acda327c95422f4739d32b3786a02863a8}"
+
+# No defaults here, deliberately.
+#
+# The pin lives in exactly one place: docker/run-docker-apulse.sh, which passes
+# it in. When these were duplicated as fallbacks, updating one and not the other
+# produced a build of stock upstream that passed the ldd gate, the payload
+# verification and the manifest prune, because every one of those compares the
+# build to itself. A missing variable must stop the build, not silently select a
+# different tree.
+if [ -z "${APULSE_REPO:-}" ] || [ -z "${APULSE_REF:-}" ]; then
+  echo "[!] ERROR: APULSE_REPO and APULSE_REF must be set by the caller"
+  echo "    They are defined once in docker/run-docker-apulse.sh. This script"
+  echo "    deliberately has no fallback: a second copy of the pin is how a"
+  echo "    build of the wrong tree happened before."
+  exit 1
+fi
 
 # Re-clone unless the existing checkout is from the repository we want. A
 # container that has run before may hold a clone of a different remote: the
@@ -125,6 +139,31 @@ echo "[+] Static pcre2: $PCRE_A"
 #
 # Step 3: configure + build
 #
+#
+# Trace build.
+#
+# APULSE_TRACE=1 compiles upstream's own tracing in. Every exported function
+# logs its name and arguments on entry, which is the only way to see the whole
+# conversation between the client and this library: not just the calls we
+# happened to instrument, but all of them, in order, with values.
+#
+# The shipped default is 0. Four attempts at the lossless playback fault were
+# aimed at inferred behaviour and missed, because what Soloist does with the
+# timing struct was never observed, only assumed.
+#
+# A trace build is enormously verbose and slower. It goes to a separate output
+# directory and is never installed into the plugin payload; the manifest in
+# run-docker-apulse.sh would reject it anyway.
+#
+TRACE_LEVEL=0
+STDERR_LEVEL=0
+if [ "${APULSE_TRACE:-0}" = "1" ]; then
+  TRACE_LEVEL=2
+  STDERR_LEVEL=1
+  echo "[+] TRACE BUILD: upstream tracing at level 2, logging to stderr"
+  echo "    Diagnostic only. Do not ship this shim."
+fi
+
 echo ""
 echo "[+] cmake / make..."
 rm -rf build
@@ -133,8 +172,8 @@ cd build
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
   -DUSE_BUNDLED_PULSEAUDIO_HEADERS=ON \
-  -DWITH_TRACE=0 \
-  -DLOG_TO_STDERR=0
+  -DWITH_TRACE="$TRACE_LEVEL" \
+  -DLOG_TO_STDERR="$STDERR_LEVEL"
 
 # cmake/pkg-config would link -lglib-2.0 dynamically. Replace with the
 # archive paths so the linker treats them as inputs it cannot reorder away
@@ -162,7 +201,10 @@ for lib in libpulse.so.0 libpulse-simple.so.0 libpulse-mainloop-glib.so.0; do
   REAL=$(readlink -f "$SRC")
   cp -a "$REAL" "$OUTPUT_DIR/$lib"
   chmod 0755 "$OUTPUT_DIR/$lib"
-  strip --strip-unneeded "$OUTPUT_DIR/$lib" || true
+  # A trace build keeps its symbols: the point is to read what it did.
+  if [ "${APULSE_TRACE:-0}" != "1" ]; then
+    strip --strip-unneeded "$OUTPUT_DIR/$lib" || true
+  fi
 done
 
 if [ -f apulse ]; then

@@ -19,20 +19,28 @@ ARCH="$1"
 shift || true
 
 VERBOSE=0
+TRACE=0
 for arg in "$@"; do
   if [[ "$arg" == "--verbose" ]]; then
     VERBOSE=1
   fi
+  if [[ "$arg" == "--trace" ]]; then
+    TRACE=1
+  fi
 done
 
 if [ -z "$ARCH" ]; then
-  echo "Usage: $0 <arch> [--verbose]"
+  echo "Usage: $0 <arch> [--verbose] [--trace]"
   echo ""
-  echo "  arch: amd64, arm64, armhf"
+  echo "  arch:      amd64, arm64, armhf"
+  echo "  --verbose: plain docker build output"
+  echo "  --trace:   build with upstream tracing (WITH_TRACE=2) into"
+  echo "             out/<arch>-trace/. Diagnostic only: it is never installed"
+  echo "             into the plugin payload."
   echo ""
   echo "Example:"
   echo "  $0 amd64"
-  echo "  $0 arm64 --verbose"
+  echo "  $0 armhf --trace"
   exit 1
 fi
 
@@ -61,6 +69,11 @@ LIB_PATH="${LIB_PATH_MAP[$ARCH]}"
 DOCKERFILE="docker/Dockerfile.apulse.$ARCH"
 IMAGE_NAME="soloist-apulse-builder:$ARCH"
 OUTPUT_DIR="out/$ARCH"
+if [ "$TRACE" -eq 1 ]; then
+  # Separate directory so a trace build can never be mistaken for a shippable
+  # one, and so the normal payload is not clobbered by it.
+  OUTPUT_DIR="out/$ARCH-trace"
+fi
 
 if [ ! -f "$DOCKERFILE" ]; then
   echo "Error: Dockerfile not found: $DOCKERFILE"
@@ -119,15 +132,17 @@ mkdir -p "$OUTPUT_DIR"
 # The apulse source. github.com/foonerd/apulse is upstream i-rinat/apulse at
 # 5d654ce with the Volumio changes as commits on master.
 #
-# These are passed into the container, so they override the defaults in
-# build-apulse.sh entirely. Keeping the same constant in two places is what let
-# a build clone stock upstream while the build script had been updated to point
-# at the fork: the script's defaults were never reached. If these move, the
-# fallbacks in build-apulse.sh must move with them.
+# THIS IS THE ONLY PLACE THE PIN IS DEFINED. build-apulse.sh has no fallback and
+# fails if these are unset. A second copy is how a build of stock upstream
+# happened: the values were updated here but not there, the container was told
+# to clone upstream, and every gate passed because they all compare the build to
+# itself.
+#
+# HTTPS deliberately: the container has no SSH key, and the fork is public.
 APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
 # Exact commit, never a branch: a moving pin makes two builds of the same plugin
 # version produce different shims.
-APULSE_REF="${APULSE_REF:-b8ffd4acda327c95422f4739d32b3786a02863a8}"
+APULSE_REF="${APULSE_REF:-bfaf17666a13279c37db6dfe42e0b3e8f26f18f1}"
 
 echo "[+] Source: $APULSE_REPO ($APULSE_REF)"
 echo ""
@@ -140,6 +155,7 @@ docker run --rm --platform="$PLATFORM" \
   -e "LIB_PATH=$LIB_PATH" \
   -e "APULSE_REPO=$APULSE_REPO" \
   -e "APULSE_REF=$APULSE_REF" \
+  -e "APULSE_TRACE=$TRACE" \
   "$IMAGE_NAME" \
   bash /build/scripts/build-apulse.sh
 
@@ -147,6 +163,26 @@ echo ""
 echo "[+] Build complete for $ARCH"
 echo "[+] Output in: $REPO_DIR/$OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
+
+#
+# A trace build stops here. It is a diagnostic artefact: verbose, unstripped,
+# and slower, and it must never reach the plugin package.
+#
+if [ "$TRACE" -eq 1 ]; then
+  echo ""
+  echo "[+] TRACE BUILD complete. NOT installed into the payload."
+  echo ""
+  echo "    To use it on the device, copy $OUTPUT_DIR/ somewhere writable and"
+  echo "    point the launcher at it:"
+  echo ""
+  echo "      sudo -u volumio env APULSE_DIAG=1 \\"
+  echo "        LD_LIBRARY_PATH=/home/volumio/apulse-trace \\"
+  echo "        /data/plugins/music_service/soloist_connect/launch-soloist.sh"
+  echo ""
+  echo "    Upstream trace goes to stderr, our diagnostics too, so both land in"
+  echo "    the same file on the same clock."
+  exit 0
+fi
 
 #
 # Install into the plugin payload.
