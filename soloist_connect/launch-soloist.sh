@@ -64,6 +64,9 @@ fi
 # pcm.volumio includes softvolume. LocalPlayback does not: it aborted
 # in snd1_pcm_hw_param_get_min and left the DAC at full scale.
 export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
+# One-shot close. Cork does not free the device; unsetVolatile/stop create
+# this file and apulse closes on it, then unlinks.
+export APULSE_YIELD_PATH="${APULSE_YIELD_PATH:-/data/soloist/alsa.yield}"
 # Caps the buffer our patched apulse requests, and the Pulse latency it
 # reports. volumioswitch delay is local + target and can sit at ~1.5 s
 # even when the slider has already shrunk the hardware PCM. Unset or 0

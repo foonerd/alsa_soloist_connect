@@ -12,6 +12,7 @@ const WS_HOST = '127.0.0.1';
 const WS_PORT = 9878; // fixed local port for the Soloist WebSocket API
 const ENV_FILE = '/data/soloist/soloist.env';
 const CACHE_DIR = '/data/soloist/cache';
+const YIELD_PATH = '/data/soloist/alsa.yield';
 
 // Spotify's own quality tiers, from the app's audio quality menu:
 //
@@ -170,6 +171,7 @@ SoloistConnect.prototype.onStart = function () {
     return defer.promise;
   }
 
+  this.clearAlsaYield();
   this.startDaemon()
     .then(() => {
       self.connectWebSocket();
@@ -568,15 +570,43 @@ SoloistConnect.prototype.updateActive = function (msg) {
 // Device ownership
 // ---------------------------------------------------------------------------
 //
-// Same contract as bluetooth's btAudioOutput: the PCM is the lock, and
-// yield does not return until we no longer hold it. Bluetooth SIGKILLs
-// bluealsa-aplay. We cannot kill Soloist, so apulse closes the handle and
-// we wait here until /proc/asound shows it gone. Takeover is the reverse:
-// volumioStop, wait until someone else has dropped the device, then claim.
+// Cork is not a close. Yield is unsetVolatile/stop only: write YIELD_PATH
+// so apulse closes the PCM, then wait until /proc/asound shows it gone.
+// Bluetooth SIGKILLs bluealsa-aplay; we cannot kill Soloist. Takeover is
+// the reverse: drop the yield file, stop whoever holds the device, claim.
 //
 // `active` is Spotify Connect device status. It is not cleared on yield:
 // clearing it made the next is_active=true look like a new selection and
 // stole the session back from MPD.
+
+SoloistConnect.prototype.requestAlsaYield = function () {
+  try {
+    fs.writeFileSync(YIELD_PATH, String(Date.now()));
+  } catch (e) {
+    this.logger.error('SoloistConnect: failed to request ALSA yield: ' + e);
+  }
+};
+
+SoloistConnect.prototype.clearAlsaYield = function () {
+  try {
+    fs.unlinkSync(YIELD_PATH);
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') {
+      this.logger.error('SoloistConnect: failed to clear ALSA yield: ' + e);
+    }
+  }
+};
+
+SoloistConnect.prototype.waitAlsaReleasedSync = function (timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 2000);
+  while (this.alsaHeldByUs() && Date.now() < deadline) {
+    try {
+      execSync('sleep 0.02', { timeout: 200 });
+    } catch (e) {
+      break;
+    }
+  }
+};
 
 SoloistConnect.prototype.alsaOwnerPids = function () {
   let out = '';
@@ -672,35 +702,10 @@ SoloistConnect.prototype.isCurrentService = function () {
   }
 };
 
-SoloistConnect.prototype.otherServicePlaying = function () {
-  try {
-    const state = this.commandRouter.volumioGetState();
-    return !!(
-      state &&
-      state.service &&
-      state.service !== this.servicename &&
-      (state.status === 'play' || state.status === 'pause')
-    );
-  } catch (e) {
-    return false;
-  }
-};
-
 SoloistConnect.prototype.takeOverPlayback = function () {
-  if (this.isCurrentService() && this.alsaHeldByOther()) {
-    const self = this;
-    this.logger.info('SoloistConnect: taking over playback');
-    try {
-      this.commandRouter.executeOnPlugin('music_service', 'mpd', 'stop');
-    } catch (e) {
-      this.logger.error('SoloistConnect: failed to stop MPD: ' + e);
-    }
-    this.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000)
-      .then(function () { self.setVolatile(); });
-    return;
-  }
+  this.clearAlsaYield();
 
-  if (!this.otherServicePlaying() && !this.alsaHeldByOther()) {
+  if (!this.alsaHeldByOther()) {
     this.setVolatile();
     return;
   }
@@ -726,6 +731,13 @@ SoloistConnect.prototype.takeOverPlayback = function () {
   };
 
   try {
+    // volumioStop stops the current service. If Volumio already thinks we
+    // are current, that would pause us and leave MPD holding the device.
+    if (this.isCurrentService()) {
+      this.commandRouter.executeOnPlugin('music_service', 'mpd', 'stop');
+      afterStop();
+      return;
+    }
     const p = this.context.coreCommand.volumioStop();
     if (p && typeof p.then === 'function') {
       p.then(afterStop).fail(function (e) {
@@ -1051,16 +1063,9 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.stopSeekTimer();
   this.state = this.emptyState();
   this.pendingYieldAt = Date.now();
+  this.requestAlsaYield();
   this.sendCommand({ command: 'pause' });
-
-  const deadline = Date.now() + 2000;
-  while (this.alsaHeldByUs() && Date.now() < deadline) {
-    try {
-      execSync('sleep 0.02', { timeout: 200 });
-    } catch (e) {
-      break;
-    }
-  }
+  this.waitAlsaReleasedSync(2000);
 
   try {
     this.context.coreCommand.stateMachine.unSetVolatile();
@@ -1088,6 +1093,7 @@ SoloistConnect.prototype.stop = function () {
   }
   this.logger.info('SoloistConnect: yielding playback');
   this.pendingYieldAt = Date.now();
+  this.requestAlsaYield();
   this.sendCommand({ command: 'pause' });
   const self = this;
   return this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)

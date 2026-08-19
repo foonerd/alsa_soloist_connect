@@ -125,9 +125,9 @@ This was a patch series until the stack reached eight files. Every consolidation
 
 Four of the commits are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a ring buffer sized in bytes rather than in time. `git format-patch 5d654ce..HEAD` produces them.
 
-The device-ownership commits are Volumio policy and belong here rather than upstream. `pa_stream_cork` originally set a paused flag and kept the ALSA device open, writing silence into it, which is reasonable for a desktop and wrong on a system where one chain is shared: it held `pcm.volumio` for the entire Connect session. Cork now closes the handle, uncork reopens it, and a reopen that finds the device busy leaves the stream corked and says so once instead of retrying.
+The device-ownership commits are Volumio policy and belong here rather than upstream. `pa_stream_cork` originally set a paused flag and kept the ALSA device open, writing silence into it, which is reasonable for a desktop and wrong on a system where one chain is shared: it held `pcm.volumio` for the entire Connect session.
 
-One consequence had to be handled with it: closing creates a new device instance, so `hw_ptr` restarts at zero. A release therefore performs the same five operations as `pa_stream_flush` (discard the ring, zero the three indices, reset the clock), because a close and reopen is a stream restart and there is one restart contract in that file, not two.
+Closing on cork was the obvious answer and it is wrong. A close creates a new device instance, so `hw_ptr` restarts at zero and the reopen races whoever took the chain in between; pause and play resumed silent, and switching source produced a retry loop against MPD. The PCM now survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the plugin writes `APULSE_YIELD_PATH`. A write gap is not a release either: that was tried and reverted, because a live stream can be idle between writes.
 
 The repo and commit are pinned in `docker/run-docker-apulse.sh` only. `scripts/build-apulse.sh` has no fallback and fails if they are unset. When the pin was duplicated in both and only one was updated, the runner's value won and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
 
@@ -268,9 +268,13 @@ Behaviour worth knowing when reading `index.js`:
 
 A Volumio source holds the audio device only while it is playing, and publishes state only while it owns the session. This plugin took a long time to get there, because ownership was tracked with plugin-local booleans while the thing actually contended for was the ALSA device.
 
-The model is now the same as bluetooth's `btAudioOutput`: **the PCM is the lock, and a yield does not return until we no longer hold it.** Bluetooth can SIGKILL `bluealsa-aplay`; Soloist cannot be killed, so apulse closes the handle and the plugin waits for the owner to disappear from `/proc/asound`.
+The model is now the same as bluetooth's `btAudioOutput`: **the PCM is the lock, and a yield does not return until we no longer hold it.** Bluetooth can SIGKILL `bluealsa-aplay`; Soloist cannot be killed, so the close is requested explicitly and the plugin waits for the owner to disappear from `/proc/asound`.
 
-Four helpers implement it:
+**Cork is not a close.** Pausing in the Spotify app keeps the device, which is what makes resume instant and gapless. Closing on cork was tried and reverted: a close creates a new device instance, and the reopen fought whoever had taken the chain in the meantime.
+
+The close is therefore signalled, not inferred. The plugin writes `/data/soloist/alsa.yield`; apulse closes the PCM when it sees that file and unlinks it. `APULSE_YIELD_PATH` is exported by `launch-soloist.sh`. The file is cleared on daemon start and at the top of every takeover, so a stale one cannot release a session that is starting.
+
+Four helpers read the lock:
 
 | Function | What it answers |
 |---|---|
@@ -279,13 +283,15 @@ Four helpers implement it:
 | `alsaHeldByUs()` / `alsaHeldByOther()` | the two comparisons |
 | `waitUntil(pred, ms)` | polls at 20 ms with a ceiling, resolving either way |
 
-**Yield**, in `unsetVolatile()` and in `stop()`: pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device instead of racing it. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
+**Yield** happens in `unsetVolatile()` and in `stop()`, and nowhere else: request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
 
-**Takeover**, in `takeOverPlayback()`, has three paths:
+**Takeover**, in `takeOverPlayback()`: clear the yield file, then
 
-- core already names us but the PCM is held by someone else: a stale registration with MPD still on the device, so stop MPD directly and wait
-- nothing else playing and nothing else holding the PCM: claim immediately
-- otherwise `volumioStop()`, wait until no other process holds the device, then clear the consume-update service and claim
+- nothing else holds the PCM: claim immediately
+- core already names us, so `volumioStop` would pause us and leave MPD on the device: stop MPD directly
+- otherwise `volumioStop()`
+
+and in every case wait until no other process holds the device before clearing the consume-update service and claiming.
 
 Two state rules that are not obvious and both came from real failures:
 
@@ -295,7 +301,7 @@ Two state rules that are not obvious and both came from real failures:
 
 Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
 
-The corresponding half is in the fork: `pa_stream_cork` releases the ALSA handle rather than holding it and writing silence, and a failed reacquire leaves the stream corked rather than reopening `plug:volumio` in a loop against whoever owns it.
+The corresponding half is in the fork: the PCM survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the yield file appears.
 
 ---
 

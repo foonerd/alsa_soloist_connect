@@ -56,14 +56,14 @@ if `ldd` shows anything other than `libasound` and the base libc family.
 ## Source
 
 [foonerd/apulse](https://github.com/foonerd/apulse) at
-`c1a0e40647891a895c33dcb8d2ef10373fab4ce4`.
+`d09c3ad2745e26ada6b8a6da8399523f63726a07`.
 
 That is a fork of [i-rinat/apulse](https://github.com/i-rinat/apulse) at
 `5d654cecd18474b4e0d885e774bc41fcbbc9818b`, with the Volumio changes as commits
 on `master`. Upstream is unchanged and still reachable:
 
 ```
-git log --oneline 5d654ce..c1a0e40
+git log --oneline 5d654ce..d09c3ad
 ```
 
 shows exactly what was added, and each commit carries its evidence in its
