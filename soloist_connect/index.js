@@ -65,6 +65,7 @@ function SoloistConnect(context) {
   this.quality = '';       // Spotify tier for the current track, '' until known
   this.qualityUri = '';    // track the last measurement was taken against
   this.qualityPath = '';   // cache file that track was reading from
+  this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
 }
 
 // ---------------------------------------------------------------------------
@@ -462,18 +463,17 @@ SoloistConnect.prototype.updateQuality = function (uri, durationMs) {
   const open = this.openCacheFile();
   if (!open) return;
 
-  // The open file must belong to the track this duration came from. If the user
-  // skipped between the event and this read, measuring would pair one track's
-  // file with another's duration, which is the fault this replaces.
-  if (this.qualityUri !== uri) {
-    this.qualityUri = uri;
-    this.qualityPath = open.path;
-    return;
-  }
+  // A unique open fd is the playing track. Defer only when the fd just
+  // changed: that is a skip handover, and the duration may still be the
+  // previous track's. The first-URI skip hid the tier until a later event,
+  // which a mid-track resume never sends.
   if (this.qualityPath && this.qualityPath !== open.path) {
     this.qualityPath = open.path;
+    this.qualityUri = uri;
     return;
   }
+  this.qualityUri = uri;
+  this.qualityPath = open.path;
 
   const kbps = Math.round((open.size * 8) / (durationMs / 1000) / 1000);
   let sample = '';
@@ -560,10 +560,7 @@ SoloistConnect.prototype.daemonPid = function () {
 // caused an endless play/pause loop.
 SoloistConnect.prototype.updateActive = function (msg) {
   if (typeof msg.is_active !== 'boolean') return;
-  if (!this.active && msg.is_active) {
-    this.activatedAt = Date.now();
-    this.takeOverPlayback();
-  }
+  if (!this.active && msg.is_active) this.activatedAt = Date.now();
   this.active = msg.is_active;
 };
 
@@ -571,27 +568,97 @@ SoloistConnect.prototype.updateActive = function (msg) {
 // Device ownership
 // ---------------------------------------------------------------------------
 //
-// The lifecycle here follows ytcr and the stock Spotify plugin, which both work
-// and which this plugin previously did not follow. Four rules:
+// Same contract as bluetooth's btAudioOutput: the PCM is the lock, and
+// yield does not return until we no longer hold it. Bluetooth SIGKILLs
+// bluealsa-aplay. We cannot kill Soloist, so apulse closes the handle and
+// we wait here until /proc/asound shows it gone. Takeover is the reverse:
+// volumioStop, wait until someone else has dropped the device, then claim.
 //
-//   1. Takeover is edge-triggered by an explicit user action, not by state
-//      arriving. ytcr acts on the sender's 'play'; here it is Soloist becoming
-//      the active Connect device.
-//   2. Takeover is gated on what Volumio thinks is the current service, not on
-//      a flag this plugin keeps about itself.
-//   3. The unset-volatile callback releases the device by stopping the daemon.
-//   4. stop() stops. Any suppression is a narrow time window, never a latch.
-//
-// The previous version broke all four: takeOverPlayback ran from pushState, so
-// every Soloist event reclaimed the device; it was gated on our own volatileSet
-// flag; the callback never stopped the daemon; and stop() ignored everything
-// while a session existed. Selecting a local track therefore produced
-//
-//   CoreCommandRouter::volumioReplaceandPlayItems
-//   SoloistConnect: stopping MPD to free pcm.volumio   (twice)
-//   error: Failed to open ALSA device "volumio": Device or resource busy
-//
-// with the user unable to leave without re-selecting the phone in the app.
+// `active` is Spotify Connect device status. It is not cleared on yield:
+// clearing it made the next is_active=true look like a new selection and
+// stole the session back from MPD.
+
+SoloistConnect.prototype.alsaOwnerPids = function () {
+  let out = '';
+  try {
+    out = execSync('sh -c "cat /proc/asound/card*/pcm*p/sub*/status 2>/dev/null"', {
+      encoding: 'utf8',
+      timeout: 500,
+    });
+  } catch (e) {
+    return [];
+  }
+  const pids = [];
+  const re = /owner_pid\s*:\s*(\d+)/g;
+  let m;
+  while ((m = re.exec(out))) pids.push(parseInt(m[1], 10));
+  return pids;
+};
+
+SoloistConnect.prototype.daemonPids = function () {
+  const pids = [];
+  try {
+    const main = parseInt(
+      execSync('systemctl show -p MainPID --value ' + SERVICE_UNIT, {
+        encoding: 'utf8',
+        timeout: 500,
+      }).trim(),
+      10
+    );
+    if (main > 0) pids.push(main);
+  } catch (e) {
+    /* unit not running */
+  }
+  const owners = this.alsaOwnerPids();
+  for (let i = 0; i < owners.length; i++) {
+    if (pids.indexOf(owners[i]) >= 0) continue;
+    try {
+      const comm = fs.readFileSync('/proc/' + owners[i] + '/comm', 'utf8').trim();
+      if (comm === 'soloist' || comm === 'launch-soloist.sh') pids.push(owners[i]);
+    } catch (e) {
+      /* process gone */
+    }
+  }
+  return pids;
+};
+
+SoloistConnect.prototype.alsaHeldByUs = function () {
+  const us = this.daemonPids();
+  if (!us.length) return false;
+  const owners = this.alsaOwnerPids();
+  for (let i = 0; i < owners.length; i++) {
+    if (us.indexOf(owners[i]) >= 0) return true;
+  }
+  return false;
+};
+
+SoloistConnect.prototype.alsaHeldByOther = function () {
+  const us = this.daemonPids();
+  const owners = this.alsaOwnerPids();
+  for (let i = 0; i < owners.length; i++) {
+    if (us.indexOf(owners[i]) < 0) return true;
+  }
+  return false;
+};
+
+SoloistConnect.prototype.waitUntil = function (pred, timeoutMs) {
+  const self = this;
+  const defer = libQ.defer();
+  const deadline = Date.now() + (timeoutMs || 2000);
+  const tick = function () {
+    if (pred.call(self)) {
+      defer.resolve();
+      return;
+    }
+    if (Date.now() >= deadline) {
+      defer.resolve();
+      return;
+    }
+    setTimeout(tick, 20);
+  };
+  tick();
+  return defer.promise;
+};
 
 // What Volumio currently considers the active service, as ytcr's
 // isCurrentService() does. Asking Volumio rather than trusting our own flag is
@@ -599,44 +666,55 @@ SoloistConnect.prototype.updateActive = function (msg) {
 SoloistConnect.prototype.isCurrentService = function () {
   try {
     const state = this.commandRouter.volumioGetState();
-
-    if (!state || !state.service) return false;
-    return state.service === this.servicename;
+    if (state !== undefined && state.service !== undefined && state.service !== this.servicename) {
+      return false;
+    }
+    return true;
   } catch (e) {
-    return false;
+    return true;
   }
 };
 
-// Stop whatever is playing and take the device. Called once, when Soloist
-// becomes the active Connect device, which is the user pressing play on their
-// phone. ytcr does exactly this on the sender's 'play' action.
 SoloistConnect.prototype.takeOverPlayback = function () {
-  // Stopping whatever else is playing is only needed when something else has
-  // the device. Claiming the session, below, happens either way: gating that on
-  // isCurrentService too meant a stale volatileService left over from an
-  // earlier session skipped setVolatile entirely, volatileSet stayed false,
-  // pushState published nothing, and Volumio sent play and pause to a service
-  // that was not the one making sound.
-  if (!this.isCurrentService()) {
-    try {
-      const sm = this.context.coreCommand.stateMachine;
-
-      this.logger.info('SoloistConnect: taking over playback');
-      this.context.coreCommand.volumioStop();
-
-      if (sm.isVolatile) {
-        sm.unSetVolatile();
-      }
-      if (typeof sm.setConsumeUpdateService === 'function') {
-        sm.setConsumeUpdateService(undefined);
-      }
-    } catch (e) {
-      this.logger.error('SoloistConnect: playback takeover failed: ' + e);
-    }
+  if (this.isCurrentService()) {
+    this.setVolatile();
+    return;
   }
 
-  // Claim the session here, on the edge, and nowhere else.
-  this.setVolatile();
+  const self = this;
+  const sm = this.context.coreCommand.stateMachine;
+
+  this.logger.info('SoloistConnect: taking over playback');
+
+  const afterFree = function () {
+    if (sm.isVolatile) {
+      sm.unSetVolatile();
+    }
+    if (typeof sm.setConsumeUpdateService === 'function') {
+      sm.setConsumeUpdateService(undefined);
+    }
+    self.setVolatile();
+  };
+
+  const afterStop = function () {
+    self.waitUntil(function () { return !self.alsaHeldByOther(); }, 2000)
+      .then(afterFree);
+  };
+
+  try {
+    const p = this.context.coreCommand.volumioStop();
+    if (p && typeof p.then === 'function') {
+      p.then(afterStop).fail(function (e) {
+        self.logger.error('SoloistConnect: playback takeover failed: ' + e);
+        afterStop();
+      });
+    } else {
+      afterStop();
+    }
+  } catch (e) {
+    this.logger.error('SoloistConnect: playback takeover failed: ' + e);
+    afterStop();
+  }
 };
 
 SoloistConnect.prototype.handleEvent = function (msg) {
@@ -693,17 +771,17 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 SoloistConnect.prototype.setStatus = function (soloistStatus) {
   const mapped = this.mapStatus(soloistStatus);
   if (mapped === 'play' && this.state.status !== 'play') {
+    if (this.pendingYieldAt && Date.now() - this.pendingYieldAt < 1500) {
+      this.state.status = 'pause';
+      this.syncSeekTimer();
+      return;
+    }
+    this.pendingYieldAt = 0;
     this.lastPlayTransitionAt = Date.now();
     // The ALSA stream only exists once playback starts. At WebSocket connect
     // /proc/asound reports "closed", so the sample rate has to be read here or
     // it is never read at all.
     this.fetchAudioSpec();
-    // Playing is the user asking for the device, which is what ytcr acts on.
-    // Activation alone is not enough: after the user switches to another
-    // source we release the session, but Soloist stays the active Connect
-    // device, so is_active never transitions again and the takeover edge in
-    // updateActive would never fire. Pressing play in the app would then
-    // produce audio with no Volumio state at all.
     this.takeOverPlayback();
   }
   this.state.status = mapped;
@@ -918,10 +996,6 @@ SoloistConnect.prototype.pushState = function () {
   this.publishState(this.stateSnapshot());
 };
 
-// Marks the session volatile. Deliberately does NOT take the device: this runs
-// from pushState, so doing takeover here made every Soloist event reclaim
-// playback from whatever the user had just started. Takeover happens once, in
-// updateActive, when Soloist becomes the active Connect device.
 SoloistConnect.prototype.setVolatile = function () {
   if (this.volatileSet) return;
   this.volatileSet = true;
@@ -952,25 +1026,22 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.pushStateDirty = false;
   this.stopSeekTimer();
   this.state = this.emptyState();
-
-  // Release the device. ytcr's onUnsetVolatile stops its player here, and the
-  // stock Spotify plugin calls stop(). Pausing the daemon closes its stream and
-  // frees ALSA: verified on hardware, a playback substream is RUNNING while
-  // playing and gone within five seconds of a pause from the app.
-  //
-  // Clearing active matters as much as the pause. Left set, the stop that
-  // follows was treated as internal churn, and the next Soloist event would
-  // have taken the device straight back.
-  this.active = false;
+  this.pendingYieldAt = Date.now();
   this.sendCommand({ command: 'pause' });
+
+  const deadline = Date.now() + 2000;
+  while (this.alsaHeldByUs() && Date.now() < deadline) {
+    try {
+      execSync('sleep 0.02', { timeout: 200 });
+    } catch (e) {
+      break;
+    }
+  }
 
   try {
     this.context.coreCommand.stateMachine.unSetVolatile();
-    this.context.coreCommand.stateMachine.resetVolumioState().then(() => {
-      this.context.coreCommand.volumioStop();
-    });
   } catch (e) {
-    /* state machine may already be reset */
+    /* already cleared by core, which is the common case */
   }
 };
 
@@ -991,9 +1062,16 @@ SoloistConnect.prototype.stop = function () {
     this.logger.info('SoloistConnect: ignoring stop echo from volatile setup');
     return libQ.resolve();
   }
-  this.logger.info('SoloistConnect: forwarding stop as pause');
+  this.logger.info('SoloistConnect: yielding playback');
+  this.pendingYieldAt = Date.now();
   this.sendCommand({ command: 'pause' });
-  return libQ.resolve();
+  const self = this;
+  return this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)
+    .then(function () {
+      if (self.alsaHeldByUs()) {
+        self.logger.error('SoloistConnect: ALSA still held after yield');
+      }
+    });
 };
 
 SoloistConnect.prototype.pause = function () {
