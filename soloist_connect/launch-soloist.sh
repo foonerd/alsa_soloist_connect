@@ -70,11 +70,6 @@ case "${TLENGTH_MS:-}" in
   ''|0|*[!0-9]*) TLENGTH_MS=500 ;;
 esac
 export APULSE_MAX_TLENGTH_MS="$TLENGTH_MS"
-# Full-scale audio into the ALSA chain. Volumio's softvol is the fader, and the
-# per-source meters read the signal where they are inserted, above it. Scaling
-# in apulse would hand the chain post-fader audio, so the meters would follow
-# the volume knob instead of the music, and the signal would be attenuated twice.
-export APULSE_UNITY_VOLUME="1"
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
 echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms uname=$(uname -m)" >&2

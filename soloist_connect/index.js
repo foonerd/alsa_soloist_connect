@@ -941,40 +941,19 @@ SoloistConnect.prototype.getState = function () {
   return this.state;
 };
 
-// The Spotify app's volume slider arrives here. apulse no longer scales the
-// samples (APULSE_UNITY_VOLUME), so Soloist's own volume value has no effect on
-// the audio: the fader is Volumio's softvol, downstream of the meters. Drive it
-// from here, or the app slider would move a number and change nothing.
-//
-// volumeFromSoloist stops onVolumioVolume echoing this straight back to Soloist
-// and starting a loop.
 SoloistConnect.prototype.applySoloistVolume = function (vol) {
-  const rounded = Math.round(vol);
-
-  this.state.volume = rounded;
-  this.lastSentVolume = rounded;
+  this.state.volume = vol;
+  this.lastSentVolume = vol;
   this.volumeFromSoloist = true;
-
-  try {
-    this.commandRouter.volumiosetvolume(rounded);
-  } catch (e) {
-    this.logger.warn(
-      'SoloistConnect: cannot set Volumio volume: ' + e.message
-    );
-  }
-
-  // Cleared on the next turn, once the mixer's own volume event has been and
-  // gone. setImmediate rather than a timer: the echo is synchronous.
   setImmediate(() => {
     this.volumeFromSoloist = false;
   });
 };
 
-// Mirror the Volumio knob back to Connect so the Spotify app slider shows the
-// right number. Since apulse runs at unity this no longer changes the audio,
-// only what the app displays. Collapse bursts - do not queue a set_volume per
-// tick in front of skip/pause (Soloist handles commands serially; that queue
-// was seconds of lag).
+// Volumio mixer already applies pcm.volumio. Mirror the knob to Connect
+// so the Spotify app slider matches. Collapse bursts — do not queue a
+// set_volume per tick in front of skip/pause (Soloist handles commands
+// serially; that queue was seconds of lag).
 SoloistConnect.prototype.onVolumioVolume = function (data) {
   if (!this.active || this.volumeFromSoloist) return;
   const vol = data && typeof data.vol === 'number' ? data.vol : data;
