@@ -23,6 +23,10 @@
     "type": "boolean",
     "value": true
   },
+  "peppy_metering": {
+    "type": "boolean",
+    "value": false
+  },
   "verbose_logging": {
     "type": "boolean",
     "value": false

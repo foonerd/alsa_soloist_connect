@@ -74,8 +74,11 @@ Wants=network-online.target
 Type=simple
 User=volumio
 Group=volumio
-# plug:volumio: format/rate conversion for Pi I2S. No PulseAudio.
-Environment=APULSE_PLAYBACK_DEVICE=plug:volumio
+# The ALSA device is NOT set here. launch-soloist.sh derives it from
+# PLAYBACK_DEVICE in /data/soloist/soloist.env, which the plugin writes:
+# plug:volumio normally, plug:spotify when PeppyMeter metering is on.
+# Setting APULSE_PLAYBACK_DEVICE here would override that permanently, since
+# the launcher treats an existing value as a deliberate override.
 ExecStart=/data/plugins/music_service/soloist_connect/launch-soloist.sh
 Restart=on-failure
 RestartSec=5

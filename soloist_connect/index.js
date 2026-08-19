@@ -300,6 +300,11 @@ SoloistConnect.prototype.writeEnvFile = function () {
     // Read by uninstall.sh, which runs after the plugin config has been
     // rendered unreadable and cannot consult it.
     `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
+    // Where apulse opens the ALSA chain. plug:volumio is the head, so every
+    // contribution applies. plug:spotify is PeppyMeter's metered entry point at
+    // contribution priority 5, which meters the stream but skips anything above
+    // it, notably FusionDSP at 10 and Stylish Player at 7.
+    `PLAYBACK_DEVICE="${this.playbackDevice()}"`,
   ];
   if (this.config.get('verbose_logging') === true) {
     lines.push('VERBOSE="true"');
@@ -307,6 +312,61 @@ SoloistConnect.prototype.writeEnvFile = function () {
 
   fs.mkdirSync('/data/soloist', { recursive: true });
   fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
+};
+
+// ---------------------------------------------------------------------------
+// PeppyMeter integration
+// ---------------------------------------------------------------------------
+//
+// PeppyMeter meters per source rather than across the whole chain. Its
+// contribution renders pcm.spotify either as a passthrough or as a multi that
+// sends the audio to postpeppyalsa and a duplicate to a meter, and it decides
+// which from its own useSpotify setting.
+//
+// It cannot rewrite our configuration the way it rewrites spop's YAML, so it
+// calls this instead. Keeping the switch on our side means PeppyMeter needs no
+// knowledge of how this plugin is configured, only that it can ask.
+//
+// Called by peppy_screensaver via:
+//   executeOnPlugin('music_service', 'soloist_connect', 'setPeppyMetering', bool)
+SoloistConnect.prototype.setPeppyMetering = function (enabled) {
+  const want = !!enabled;
+  if (this.config.get('peppy_metering') === want) return libQ.resolve();
+
+  this.logger.info(
+    'SoloistConnect: PeppyMeter metering ' + (want ? 'enabled' : 'disabled') +
+    '; output device becomes ' + (want ? 'plug:spotify' : 'plug:volumio')
+  );
+  this.config.set('peppy_metering', want);
+
+  // Nothing to restart if the daemon is not running; the new device is picked
+  // up from the env file at next start.
+  if (!this.active && !this.ws) {
+    this.writeEnvFile();
+    return libQ.resolve();
+  }
+  return this.startDaemon().then(() => this.connectWebSocket());
+};
+
+// plug:spotify only exists when PeppyMeter has rendered its contribution with
+// metering on. Opening it otherwise would fail, so the setting alone is not
+// enough: the PCM has to be there.
+SoloistConnect.prototype.playbackDevice = function () {
+  if (this.config.get('peppy_metering') !== true) return 'plug:volumio';
+
+  try {
+    const conf = fs.readFileSync('/etc/asound.conf', 'utf8');
+    if (/^\s*pcm\.spotify\s*\{/m.test(conf)) return 'plug:spotify';
+    this.logger.warn(
+      'SoloistConnect: peppy_metering is set but pcm.spotify is not in ' +
+      '/etc/asound.conf; staying on plug:volumio'
+    );
+  } catch (e) {
+    this.logger.warn(
+      'SoloistConnect: cannot read /etc/asound.conf: ' + e.message
+    );
+  }
+  return 'plug:volumio';
 };
 
 // ---------------------------------------------------------------------------
