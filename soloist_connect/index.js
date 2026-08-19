@@ -49,6 +49,10 @@ function SoloistConnect(context) {
   this.activatedAt = 0; // when Soloist last became active
   this.lastPlayTransitionAt = 0; // when status last flipped to 'play'
   this.volatileSet = false;
+  // Re-entry guard for state publication. servicePushState runs the whole
+  // Volumio state chain synchronously; a nested publication would recurse until
+  // the Socket.IO encoder blew the stack.
+  this.publishing = false;
   this.ignoreStopEvent = false;
   this.state = this.emptyState();
   this.positionAnchor = { position_ms: 0, timestamp_ms: Date.now(), speed: 0 };
@@ -563,44 +567,76 @@ SoloistConnect.prototype.updateActive = function (msg) {
   this.active = msg.is_active;
 };
 
-// AirPlay (prepareAirplayPlayback) stops the current service and clears
-// consume-update before taking the DAC. Official Spotify left the same
-// idea as a TODO on will_play. setVolatile() alone does not stop MPD.
-// Pi I2S is exclusive; x86 HDA/USB often has dmix — same plugin, different
-// hardware rules.
-SoloistConnect.prototype.takeOverPlayback = function () {
-  this.ignoreStopEvent = true;
+// ---------------------------------------------------------------------------
+// Device ownership
+// ---------------------------------------------------------------------------
+//
+// The lifecycle here follows ytcr and the stock Spotify plugin, which both work
+// and which this plugin previously did not follow. Four rules:
+//
+//   1. Takeover is edge-triggered by an explicit user action, not by state
+//      arriving. ytcr acts on the sender's 'play'; here it is Soloist becoming
+//      the active Connect device.
+//   2. Takeover is gated on what Volumio thinks is the current service, not on
+//      a flag this plugin keeps about itself.
+//   3. The unset-volatile callback releases the device by stopping the daemon.
+//   4. stop() stops. Any suppression is a narrow time window, never a latch.
+//
+// The previous version broke all four: takeOverPlayback ran from pushState, so
+// every Soloist event reclaimed the device; it was gated on our own volatileSet
+// flag; the callback never stopped the daemon; and stop() ignored everything
+// while a session existed. Selecting a local track therefore produced
+//
+//   CoreCommandRouter::volumioReplaceandPlayItems
+//   SoloistConnect: stopping MPD to free pcm.volumio   (twice)
+//   error: Failed to open ALSA device "volumio": Device or resource busy
+//
+// with the user unable to leave without re-selecting the phone in the app.
+
+// What Volumio currently considers the active service, as ytcr's
+// isCurrentService() does. Asking Volumio rather than trusting our own flag is
+// the difference between taking the device once and taking it repeatedly.
+SoloistConnect.prototype.isCurrentService = function () {
   try {
-    const sm = this.context.coreCommand.stateMachine;
-    const state = typeof sm.getState === 'function' ? sm.getState() : null;
-    if (state && state.service && state.service !== this.servicename) {
-      if (sm.isVolatile) {
-        this.logger.info('SoloistConnect: unsetting volatile service ' + state.service);
-        sm.unSetVolatile();
-      } else {
-        this.logger.info('SoloistConnect: stopping ' + state.service + ' to free pcm.volumio');
-        this.context.coreCommand.volumioStop();
-      }
-    }
-    if (typeof sm.setConsumeUpdateService === 'function') {
-      sm.setConsumeUpdateService(undefined);
-    }
+    const state = this.commandRouter.volumioGetState();
+
+    if (!state || !state.service) return false;
+    return state.service === this.servicename;
   } catch (e) {
-    this.logger.error('SoloistConnect: playback takeover failed: ' + e);
+    return false;
   }
-  this.releaseAlsaDevice();
 };
 
-SoloistConnect.prototype.releaseAlsaDevice = function () {
-  try {
-    const mpd = this.commandRouter.pluginManager.getPlugin('music_service', 'mpd');
-    if (mpd && typeof mpd.stop === 'function') {
-      this.logger.info('SoloistConnect: stopping MPD to free pcm.volumio');
-      mpd.stop();
+// Stop whatever is playing and take the device. Called once, when Soloist
+// becomes the active Connect device, which is the user pressing play on their
+// phone. ytcr does exactly this on the sender's 'play' action.
+SoloistConnect.prototype.takeOverPlayback = function () {
+  // Stopping whatever else is playing is only needed when something else has
+  // the device. Claiming the session, below, happens either way: gating that on
+  // isCurrentService too meant a stale volatileService left over from an
+  // earlier session skipped setVolatile entirely, volatileSet stayed false,
+  // pushState published nothing, and Volumio sent play and pause to a service
+  // that was not the one making sound.
+  if (!this.isCurrentService()) {
+    try {
+      const sm = this.context.coreCommand.stateMachine;
+
+      this.logger.info('SoloistConnect: taking over playback');
+      this.context.coreCommand.volumioStop();
+
+      if (sm.isVolatile) {
+        sm.unSetVolatile();
+      }
+      if (typeof sm.setConsumeUpdateService === 'function') {
+        sm.setConsumeUpdateService(undefined);
+      }
+    } catch (e) {
+      this.logger.error('SoloistConnect: playback takeover failed: ' + e);
     }
-  } catch (e) {
-    this.logger.error('SoloistConnect: could not stop MPD: ' + e);
   }
+
+  // Claim the session here, on the edge, and nowhere else.
+  this.setVolatile();
 };
 
 SoloistConnect.prototype.handleEvent = function (msg) {
@@ -644,7 +680,7 @@ SoloistConnect.prototype.handleEvent = function (msg) {
         this.applyPosition(msg.position);
         this.state.seek = this.currentSeekMs();
         if (this.volatileSet && Math.abs(this.state.seek - before) > 2000) {
-          this.commandRouter.servicePushState(this.state, this.servicename);
+          this.publishState(this.stateSnapshot());
         }
       }
       break;
@@ -662,6 +698,13 @@ SoloistConnect.prototype.setStatus = function (soloistStatus) {
     // /proc/asound reports "closed", so the sample rate has to be read here or
     // it is never read at all.
     this.fetchAudioSpec();
+    // Playing is the user asking for the device, which is what ytcr acts on.
+    // Activation alone is not enough: after the user switches to another
+    // source we release the session, but Soloist stays the active Connect
+    // device, so is_active never transitions again and the takeover edge in
+    // updateActive would never fire. Pressing play in the app would then
+    // produce audio with no Volumio state at all.
+    this.takeOverPlayback();
   }
   this.state.status = mapped;
   this.syncSeekTimer();
@@ -758,7 +801,7 @@ SoloistConnect.prototype.syncSeekTimer = function () {
       }
       this.state.seek = this.currentSeekMs();
       if (this.volatileSet) {
-        this.commandRouter.servicePushState(this.state, this.servicename);
+        this.publishState(this.stateSnapshot());
       }
     }, 1000);
     return;
@@ -819,9 +862,47 @@ SoloistConnect.prototype.pushStateNow = function () {
   this.pushState();
 };
 
+// Publishing state must never re-enter itself.
+//
+// servicePushState drives Volumio's state machine synchronously: syncState,
+// pushState, volumioPushState, then every interface plugin. If anything in that
+// chain leads back here, the second publication nests inside the first and the
+// stack grows until JSON.stringify in the Socket.IO encoder throws
+// RangeError: Maximum call stack size exceeded. That is what a fatal crash on
+// takeover looked like, with the encoder as the victim rather than the cause.
+//
+// Two rules, both cheap:
+//   - a re-entry guard, so a nested call is dropped rather than recursing;
+//   - publish a snapshot, never this.state, so Volumio cannot observe the live
+//     object mutating underneath it during nested publication. The state
+//     machine keeps volatileState by reference, so handing it the live object
+//     aliases our mutable state into core.
+SoloistConnect.prototype.stateSnapshot = function () {
+  return Object.assign({}, this.state);
+};
+
+SoloistConnect.prototype.publishState = function (state) {
+  if (this.publishing) {
+    this.logger.warn(
+      'SoloistConnect: state publication re-entered; dropping nested push'
+    );
+    return;
+  }
+  this.publishing = true;
+  try {
+    this.commandRouter.servicePushState(state, this.servicename);
+  } finally {
+    this.publishing = false;
+  }
+};
+
 SoloistConnect.prototype.pushState = function () {
   if (!this.active) return;
-  this.setVolatile();
+  // Only publish while we are the volatile service. setVolatile is asserted
+  // once, on the takeover edge in updateActive, not here: calling it from
+  // pushState meant every event from a still-connected phone re-claimed the
+  // session, so our metadata overwrote whatever the user had switched to.
+  if (!this.volatileSet) return;
   this.state.service = this.servicename;
   this.state.seek = this.currentSeekMs();
   // The quality tier is measured from the cache and does not depend on ALSA, so
@@ -834,17 +915,31 @@ SoloistConnect.prototype.pushState = function () {
     this.state.samplerate = this.audioSpec.samplerate;
     this.state.channels = this.audioSpec.channels;
   }
-  this.commandRouter.servicePushState(this.state, this.servicename);
+  this.publishState(this.stateSnapshot());
 };
 
+// Marks the session volatile. Deliberately does NOT take the device: this runs
+// from pushState, so doing takeover here made every Soloist event reclaim
+// playback from whatever the user had just started. Takeover happens once, in
+// updateActive, when Soloist becomes the active Connect device.
 SoloistConnect.prototype.setVolatile = function () {
   if (this.volatileSet) return;
   this.volatileSet = true;
-  this.takeOverPlayback();
   this.context.coreCommand.stateMachine.setVolatile({
     service: this.servicename,
     callback: this.unsetVolatile.bind(this),
   });
+
+  // Volumio emits a stop() echo shortly after volatile mode begins. Swallow
+  // that window and nothing more. The stock Spotify plugin uses the same two
+  // seconds, cleared unconditionally: a latch tied to session state made every
+  // later stop unreachable.
+  this.ignoreStopEvent = true;
+  if (this.ignoreStopTimer) clearTimeout(this.ignoreStopTimer);
+  this.ignoreStopTimer = setTimeout(() => {
+    this.ignoreStopTimer = null;
+    this.ignoreStopEvent = false;
+  }, 2000);
 };
 
 SoloistConnect.prototype.unsetVolatile = function () {
@@ -857,6 +952,18 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.pushStateDirty = false;
   this.stopSeekTimer();
   this.state = this.emptyState();
+
+  // Release the device. ytcr's onUnsetVolatile stops its player here, and the
+  // stock Spotify plugin calls stop(). Pausing the daemon closes its stream and
+  // frees ALSA: verified on hardware, a playback substream is RUNNING while
+  // playing and gone within five seconds of a pause from the app.
+  //
+  // Clearing active matters as much as the pause. Left set, the stop that
+  // follows was treated as internal churn, and the next Soloist event would
+  // have taken the device straight back.
+  this.active = false;
+  this.sendCommand({ command: 'pause' });
+
   try {
     this.context.coreCommand.stateMachine.unSetVolatile();
     this.context.coreCommand.stateMachine.resetVolumioState().then(() => {
@@ -871,13 +978,17 @@ SoloistConnect.prototype.unsetVolatile = function () {
 // Volumio playback controls -> Soloist commands
 // ---------------------------------------------------------------------------
 
-// Volumio's state machine calls stop() on volatile services whenever it syncs
-// state transitions - roughly 30ms after every "play" we push. While Soloist is
-// the active Connect device, those stop() calls are always internal churn (the
-// user's pause arrives via pause() or the Spotify app), so ignore them entirely.
+// Volumio emits a stop() echo shortly after volatile mode begins; setVolatile
+// opens a two-second window for it. Outside that window a stop is real and is
+// forwarded, which is what lets the user select another source.
+//
+// This used to read `if (this.ignoreStopEvent || this.active)`, so no stop ever
+// reached Soloist while a Connect session existed and the device could not be
+// released. ytcr's stop() has no suppression at all; the stock Spotify plugin
+// suppresses only inside its own two-second window.
 SoloistConnect.prototype.stop = function () {
-  if (this.ignoreStopEvent || this.active) {
-    this.logger.info('SoloistConnect: ignoring stop while Connect session is active');
+  if (this.ignoreStopEvent) {
+    this.logger.info('SoloistConnect: ignoring stop echo from volatile setup');
     return libQ.resolve();
   }
   this.logger.info('SoloistConnect: forwarding stop as pause');
@@ -936,9 +1047,12 @@ SoloistConnect.prototype.repeat = function (value, repeatSingle) {
   return libQ.resolve();
 };
 
+// A snapshot, not the live object. Volumio's state machine stores what it is
+// given by reference, so returning this.state would let core observe our
+// mutations mid-publication.
 SoloistConnect.prototype.getState = function () {
   this.state.seek = this.currentSeekMs();
-  return this.state;
+  return this.stateSnapshot();
 };
 
 SoloistConnect.prototype.applySoloistVolume = function (vol) {
