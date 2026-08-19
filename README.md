@@ -255,7 +255,30 @@ Behaviour worth knowing when reading `index.js`:
 - Volumio's state machine calls `stop()` on volatile services during normal state syncing. While a Connect session is active those calls are ignored.
 - `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
-- Sample rate and bit depth come from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report them. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
+- Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
+- The bit depth field carries the Spotify quality tier instead of a bit depth. See [Reporting the quality tier](#reporting-the-quality-tier).
+
+---
+
+## Reporting the quality tier
+
+The now-playing line shows the Spotify quality tier, matching the names in the app's audio quality menu: Low, Normal, High, Very High, Lossless.
+
+Nothing in Soloist reports it. The WebSocket schema is fully documented and `playback_state` carries only `status`, `item`, `context`, `position`, `volume`, `is_active`, `options` and `available_actions`; the entity envelope carries `identity`, `visual_identity`, `parent`, `creators` and `playback.duration_ms`. There is no codec, bitrate, sample rate or quality field anywhere, and others have asked Spotify for one on the developer forum. Its FFmpeg stream-info dump is debug-only: verified with `--verbose` confirmed on the running daemon and 60 s of playback captured, producing no output.
+
+Bit depth is no guide either. Soloist decodes every quality into `FLOAT_LE`, and `/proc/asound` shows the endpoint after `pcm.softvolume` converts, so that field read `24 bit` for lossy and lossless alike. It carries the tier instead, which is what the user actually chose, and it lands where Volumio already shows quality beside the sample rate. The stock Spotify plugin does the same thing with its configured bitrate string.
+
+The measurement is the cache. Soloist writes one content-addressed file per track and it is already complete when playback starts: sampled every two seconds over ten, the size did not move. Size against `duration_ms` is therefore the exact average bitrate.
+
+**The file is identified by open descriptor, not by mtime.** Soloist holds the playing track's file open under `/proc/<pid>/fd`, and it follows every skip within a second. Audio payloads are under `cache/cache/`; the LevelDB metadata store is under `data/cache/` and must not match.
+
+Choosing by mtime instead was wrong, and wrong quietly. The two newest files are usually the current track and its prefetch, but under skipping there are several partial downloads in flight, and the duration comes from the current `track_changed` event while the file came from the cache. The same 6289411 bytes was reported against 185 s and then 232 s, giving Very High and then High for one file.
+
+A measurement is only taken when the same track URI and the same open file are seen twice in succession. During a handover two files are open and nothing is measured. Under rapid skipping the open file changes constantly, nothing is measured, and the previous label stands.
+
+Measured on device: 333 kbps against Spotify's stated 320 for Very High, and 1654 and 1662 kbps across two different lossless tracks, which is where FLAC at 44.1 kHz sits.
+
+One limitation: this measures what was downloaded, not what Spotify holds. A track only available at a lower tier than selected will show the lower tier. That is arguably more accurate than echoing the setting, but it will differ from the app's menu on some tracks.
 
 ---
 
@@ -323,7 +346,6 @@ so a skip discarded nothing and the already-committed audio played out. Confirme
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter will not meter this plugin.** Its per-source metering is hardcoded to the `spop` plugin's paths and config format. The screensaver itself does trigger, via its `Other_ON` branch.
 - **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
-- **Codec and bitrate are not reported.** No Soloist API exposes them, and its FFmpeg stream-info dump is debug-only: verified with `--verbose` confirmed on the running daemon and 60 s of playback captured, producing no output. Bit depth is no guide either, since Soloist decodes every source into `FLOAT_LE`. The cache does hold one complete file per track, so size against `duration_ms` gives the true average bitrate; measured 1847 kbps on lossless against 338 on lossy. Not implemented.
 - armv6 devices are out of scope.
 
 ---

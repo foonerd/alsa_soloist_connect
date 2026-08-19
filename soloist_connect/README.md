@@ -65,7 +65,9 @@ Soloist has no ALSA backend of its own; it speaks PipeWire or PulseAudio.
 The plugin ships a private copy of **apulse**, which implements the PulseAudio client API on top of ALSA, and points Soloist at it.
 No PulseAudio daemon is installed, and nothing else on the system is changed.
 
-Sample rate and bit depth shown in the Volumio UI are read from the open ALSA playback stream, because the Soloist API does not report them.
+Sample rate and quality shown in the Volumio UI are worked out on the device.
+Soloist does not report either, so the sample rate comes from the open ALSA stream and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
+Rapid skipping produces no measurement, so the last known tier stays on screen rather than being replaced by a guess.
 
 ---
 

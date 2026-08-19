@@ -11,6 +11,27 @@ const SERVICE_UNIT = 'soloist.service';
 const WS_HOST = '127.0.0.1';
 const WS_PORT = 9878; // fixed local port for the Soloist WebSocket API
 const ENV_FILE = '/data/soloist/soloist.env';
+const CACHE_DIR = '/data/soloist/cache';
+
+// Spotify's own quality tiers, from the app's audio quality menu:
+//
+//   Low        24 kbps
+//   Normal     96 kbps
+//   High      160 kbps
+//   Very High 320 kbps
+//   Lossless  FLAC, up to 24-bit/44.1 kHz
+//
+// Boundaries sit between the tiers rather than on them, so a track that
+// compresses slightly under or over its target still lands in the right band.
+// The lossless boundary is well clear: measured 1847 kbps on lossless against
+// 338 on Very High.
+const QUALITY_TIERS = [
+  { max: 60, label: 'Low' },
+  { max: 128, label: 'Normal' },
+  { max: 240, label: 'High' },
+  { max: 450, label: 'Very High' },
+  { max: Infinity, label: 'Lossless' },
+];
 // data/cache dirs are fixed in launch-soloist.sh
 
 module.exports = SoloistConnect;
@@ -37,6 +58,9 @@ function SoloistConnect(context) {
   this.volumeTimer = null;
   this.lastSentVolume = -1;
   this.volumeFromSoloist = false;
+  this.quality = '';       // Spotify tier for the current track, '' until known
+  this.qualityUri = '';    // track the last measurement was taken against
+  this.qualityPath = '';   // cache file that track was reading from
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +421,131 @@ SoloistConnect.prototype.fetchAudioSpec = function () {
 };
 
 // ---------------------------------------------------------------------------
+// Stream quality
+// ---------------------------------------------------------------------------
+
+// Soloist reports neither codec nor bitrate, and this is not an oversight in
+// our reading of it. The full WebSocket schema is documented, and playback_state
+// carries only status, item, context, position, volume, is_active, options and
+// available_actions; the entity envelope carries identity, visual_identity,
+// parent, creators and playback.duration_ms. There is no quality field anywhere,
+// and others have asked Spotify for one on the developer forum.
+//
+// The bit depth ALSA reports is no guide either. Soloist decodes every quality
+// into FLOAT_LE, and the /proc/asound endpoint shows S24_LE because
+// pcm.softvolume converts, so that field read "24 bit" for lossy and lossless
+// alike.
+//
+// So the cache is the only signal, and it has to be read carefully.
+//
+// Identify the file by open descriptor, not by mtime. Soloist holds the playing
+// track's file open under /proc/<pid>/fd and it follows every skip within a
+// second. Choosing by mtime instead paired a file with the wrong track: the same
+// 6289411 bytes was measured against 185 s and then 232 s, reporting "Very High"
+// and then "High" for one file, because the file came from the cache and the
+// duration from a later track_changed event.
+//
+// Audio payloads live under cache/cache/; the LevelDB metadata store is under
+// data/cache/ and must not match.
+//
+// A track's file is already complete when playback starts: sampled every two
+// seconds over ten, the size did not move. Under rapid skipping no file is
+// unambiguously open -- nine different files in twenty-seven seconds -- so no
+// measurement is taken and the previous label stands.
+SoloistConnect.prototype.updateQuality = function (uri, durationMs) {
+  if (!durationMs || durationMs <= 0) return;
+
+  const open = this.openCacheFile();
+  if (!open) return;
+
+  // The open file must belong to the track this duration came from. If the user
+  // skipped between the event and this read, measuring would pair one track's
+  // file with another's duration, which is the fault this replaces.
+  if (this.qualityUri !== uri) {
+    this.qualityUri = uri;
+    this.qualityPath = open.path;
+    return;
+  }
+  if (this.qualityPath && this.qualityPath !== open.path) {
+    this.qualityPath = open.path;
+    return;
+  }
+
+  const kbps = Math.round((open.size * 8) / (durationMs / 1000) / 1000);
+  let sample = '';
+  for (const tier of QUALITY_TIERS) {
+    if (kbps < tier.max) {
+      sample = tier.label;
+      break;
+    }
+  }
+
+  this.logger.info(
+    'SoloistConnect: open ' + open.path + ' ' + open.size + ' bytes over ' +
+    Math.round(durationMs / 1000) + 's = ' + kbps + ' kbps -> ' + sample
+  );
+
+  this.quality = sample;
+};
+
+// The cache file Soloist currently has open for reading, which is the track
+// playing now. Null when none is open, when more than one is (a handover
+// between tracks), or when the daemon is not readable.
+SoloistConnect.prototype.openCacheFile = function () {
+  const pid = this.daemonPid();
+  if (!pid) return null;
+
+  let entries;
+  try {
+    entries = fs.readdirSync('/proc/' + pid + '/fd');
+  } catch (e) {
+    return null; // daemon gone, or not ours to read
+  }
+
+  const found = [];
+  for (const fd of entries) {
+    let target;
+    try {
+      target = fs.readlinkSync('/proc/' + pid + '/fd/' + fd);
+    } catch (e) {
+      continue; // fd closed between readdir and readlink
+    }
+    // Audio payload only. The LevelDB metadata store lives under data/cache/
+    // and would otherwise match on the word "cache".
+    if (target.indexOf(CACHE_DIR + '/cache/') !== 0) continue;
+    if (!target.endsWith('.file')) continue;
+    if (found.indexOf(target) === -1) found.push(target);
+  }
+
+  // Two open files means a handover is in progress and neither is
+  // unambiguously the playing track.
+  if (found.length !== 1) return null;
+
+  let size;
+  try {
+    size = fs.statSync(found[0]).size;
+  } catch (e) {
+    return null;
+  }
+  if (!size) return null;
+
+  return { path: found[0], size: size };
+};
+
+SoloistConnect.prototype.daemonPid = function () {
+  try {
+    const out = execSync(
+      '/bin/systemctl show -p MainPID --value ' + SERVICE_UNIT,
+      { encoding: 'utf8', timeout: 2000 }
+    ).trim();
+    const pid = parseInt(out, 10);
+    return pid > 0 ? pid : 0;
+  } catch (e) {
+    return 0;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Soloist events -> Volumio state
 // ---------------------------------------------------------------------------
 
@@ -546,6 +695,7 @@ SoloistConnect.prototype.applyItem = function (item) {
     .filter(Boolean)
     .join(', ');
   this.state.duration = Math.round((playback.duration_ms || 0) / 1000);
+  this.updateQuality(item.uri || '', playback.duration_ms);
 
   let art = '';
   const preferred = ['large', 'xlarge', 'default', 'small'];
@@ -672,7 +822,12 @@ SoloistConnect.prototype.pushState = function () {
   this.state.seek = this.currentSeekMs();
   if (this.audioSpec) {
     this.state.samplerate = this.audioSpec.samplerate;
-    this.state.bitdepth = this.audioSpec.bitdepth;
+    // Bit depth is deliberately not the ALSA value. Soloist decodes every
+    // quality into FLOAT_LE and the endpoint reports the chain's S24_LE, so it
+    // read "24 bit" for lossy and lossless alike. This field carries the
+    // Spotify tier instead, which is what the user actually chose, and it lands
+    // where Volumio's UI already shows quality beside the sample rate.
+    this.state.bitdepth = this.quality;
     this.state.channels = this.audioSpec.channels;
   }
   this.commandRouter.servicePushState(this.state, this.servicename);
