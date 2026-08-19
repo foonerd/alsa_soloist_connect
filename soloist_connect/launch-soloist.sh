@@ -37,6 +37,25 @@ unset LD_LIBRARY_PATH
 
 APULSE_ARCH="$("$PLUGIN_DIR/detect-arch.sh")"
 APULSE_DIR="$PLUGIN_DIR/alsa-lib/$APULSE_ARCH"
+
+# Diagnostic override. APULSE_DIR_OVERRIDE points the daemon at a different
+# apulse build, which is how a trace build (WITH_TRACE=2, unstripped) is used
+# without installing it into the plugin payload.
+#
+# It has to be an explicit variable: this script unsets LD_LIBRARY_PATH above,
+# to keep the sideloaded 32-bit glibc away from bash and patchelf, and then sets
+# it again on the exec line. Anything the caller exports is discarded in
+# between, so passing LD_LIBRARY_PATH on the command line silently has no
+# effect and the payload shim runs instead. That cost a capture.
+if [ -n "${APULSE_DIR_OVERRIDE:-}" ]; then
+  if [ ! -f "$APULSE_DIR_OVERRIDE/libpulse.so.0" ]; then
+    echo "APULSE_DIR_OVERRIDE=$APULSE_DIR_OVERRIDE has no libpulse.so.0" >&2
+    exit 1
+  fi
+  APULSE_DIR="$APULSE_DIR_OVERRIDE"
+  echo "SoloistConnect: USING OVERRIDE SHIM $APULSE_DIR (diagnostic build)" >&2
+fi
+
 if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
   echo "apulse shim missing at $APULSE_DIR (userspace $APULSE_ARCH, uname=$(uname -m))." >&2
   exit 1
