@@ -61,13 +61,7 @@ if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
   exit 1
 fi
 
-# Where apulse opens the ALSA chain.
-#
-# writeEnvFile() emits PLAYBACK_DEVICE: plug:volumio normally, plug:spotify when
-# PeppyMeter metering is on. plug:spotify is PeppyMeter's metered entry point at
-# contribution priority 5, so it meters the stream but skips contributions above
-# it. An environment override still wins, for diagnostics.
-export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-${PLAYBACK_DEVICE:-plug:volumio}}"
+export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
 # Caps the buffer our patched apulse requests, and the Pulse latency it
 # reports. volumioswitch delay is local + target and can sit at ~1.5 s
 # even when the slider has already shrunk the hardware PCM. Unset or 0
