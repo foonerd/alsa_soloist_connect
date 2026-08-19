@@ -91,7 +91,6 @@ A device left powered off past the expiry will refresh on its next start, provid
 **Skip and seek are not instant.**
 Volumio's ALSA chain buffers audio ahead of the DAC, and it applies the Output Buffer setting twice, so the delay is roughly double the value you set.
 Lowering the setting shortens it; too low risks dropouts on a busy device.
-A residual delay remains at any setting, because the audio already sent downstream is played out rather than discarded.
 
 **The Soloist binary is not part of this package.**
 It is downloaded from Spotify's official CDN during install, because Spotify does not permit redistributing it.

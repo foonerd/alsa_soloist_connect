@@ -123,9 +123,9 @@ Each commit carries its evidence in its message: the device captures, the disass
 
 This was a patch series until the stack reached eight files. Every consolidation shifted the next patch's line numbers, and a hand-edited hunk header twice cost a build by silently dropping every hunk after it. Git maintains the arithmetic now, and a change is a commit rather than a diff to be transcribed.
 
-Four of the eight are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a `read_index` that collapsed to zero whenever the clock stopped. `git format-patch 5d654ce..HEAD` produces them.
+Four of the commits are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a ring buffer sized in bytes rather than in time. `git format-patch 5d654ce..HEAD` produces them.
 
-The repo and commit are pinned in `docker/run-docker-apulse.sh`, which passes both into the container as environment variables, and mirrored as fallbacks in `scripts/build-apulse.sh`. **Keep the two in agreement.** When only the build script was updated to point at the fork, the runner's values won, and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
+The repo and commit are pinned in `docker/run-docker-apulse.sh` only. `scripts/build-apulse.sh` has no fallback and fails if they are unset. When the pin was duplicated in both and only one was updated, the runner's value won and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
 
 Four gates now catch a wrong tree, and each compares against something external:
 
@@ -286,29 +286,44 @@ Moving the output device down the chain would recover the time and is the wrong 
 
 At 500 ms the hardware reports `buffer_size` 22050 frames with `period_size` 882, against 65536 and 512 at the default.
 
-The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency and steers speed from it. `0003-apulse-cap-reported-latency.patch` caps the Pulse figure, not the `/proc/asound` `delay` line.
+The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency, and the fork caps the Pulse figure rather than the `/proc/asound` `delay` line.
 
 `minreq`, and therefore the ALSA period, is `tlength/4`. That sets the useful floor: at 100 ms the period is 25 ms, which is about as low as a loaded Pi tolerates.
 
-One related upstream behaviour is unfixed. apulse implements `pa_stream_flush` as a no-op:
+### Supply rate, and why lossless was the only quality that hunted
+
+The buffer work above bounded the latency but did not stop lossless rushing and slowing. Six changes to the playback clock made no audible difference. An upstream trace of the Soloist to apulse conversation showed why: the clock was never the problem.
+
+Soloist was supplying audio at **1.234x realtime**. It writes 32768 bytes at a time, which is 93 ms at float32 stereo, and the median gap between writes was 98 ms, but 43% of writes arrived faster: 26% at 40 to 80 ms, 13% at 10 to 40 ms, 4% under 10 ms. It filled the ring, got a zero from `pa_stream_writable_size`, stalled, then burst again. That alternation is what you hear.
+
+Two causes, both in apulse, and both explain why only lossless was affected.
+
+**The ring was sized in bytes.** `ringbuffer_new(72 * 1024)` is a duration only if the frame size is fixed: 418 ms of S16 stereo, but 209 ms of FLOAT32 stereo. Soloist decodes lossy to S16 and lossless to FLOAT32, so lossless got half the buffer while writing twice as much per call. The ring is now 500 ms at the client's own frame size.
+
+**`writable_size` reported the whole ring rather than the room left against `tlength`.** A real PulseAudio server bounds it by the target, which is what holds a client at the level it was told to hold. Without that bound the client writes until the ring is full instead of until the target is met. It is now `tlength - fill`.
+
+The bound has a consequence that has to be handled with it: a flush discards the ring, so both `write_index` and `read_index` must reset with it. Leaving `write_index` at its accumulated value made `fill` read as the whole session, `room` went negative, `writable_size` returned zero permanently, and track changes hung with no response at all. `pa_stream_disconnect` has the same hazard for a reconnect on the same stream.
+
+One related upstream behaviour is now fixed rather than bounded. apulse implemented `pa_stream_flush` as a no-op:
 
 ```c
 static void pa_stream_flush_impl(pa_operation *op) {
     // TODO: is it ok to do nothing?
 ```
 
-so a skip discards nothing and the already-committed audio plays out. Confirmed on hardware by sampling `delay` across a skip: it never falls. The buffer cap bounds the symptom rather than removing it.
+so a skip discarded nothing and the already-committed audio played out. Confirmed on hardware by sampling `delay` across a skip: it never fell. The flush now drops the ring, drops and re-prepares the device, and resets the indices and the clock with it.
 
 ---
 
 ## Known limitations
 
 - **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button.
-- **Skip and seek are not instant.** Bounded by the Output Buffer setting rather than the 3 s it was, because `pa_stream_flush` discards nothing upstream. See [Buffering and the ALSA chain](#buffering-and-the-alsa-chain).
+- **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter will not meter this plugin.** Its per-source metering is hardcoded to the `spop` plugin's paths and config format. The screensaver itself does trigger, via its `Other_ON` branch.
-- **arm64 is unverified at runtime.** Built by the matrix and carries the patches, but only armhf and amd64 have been exercised.
+- **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
+- **Codec and bitrate are not reported.** No Soloist API exposes them, and its FFmpeg stream-info dump is debug-only: verified with `--verbose` confirmed on the running daemon and 60 s of playback captured, producing no output. Bit depth is no guide either, since Soloist decodes every source into `FLOAT_LE`. The cache does hold one complete file per track, so size against `duration_ms` gives the true average bitrate; measured 1847 kbps on lossless against 338 on lossy. Not implemented.
 - armv6 devices are out of scope.
 
 ---
@@ -344,7 +359,7 @@ Summary:
 | Component | Licence | Redistributed here |
 |---|---|---|
 | This project's code | MIT | yes |
-| apulse | MIT | yes, as prebuilt libraries under `soloist_connect/alsa-lib/`, patched by `patches/` |
+| apulse | MIT | yes, as prebuilt libraries under `soloist_connect/alsa-lib/`, built from the fork |
 | GLib | LGPL-2.1-or-later | statically linked into the apulse libraries |
 | PCRE2 | BSD-3-Clause | statically linked into the apulse libraries |
 | PulseAudio public headers | LGPL-2.1-or-later | no, build-time only |
