@@ -658,6 +658,10 @@ SoloistConnect.prototype.setStatus = function (soloistStatus) {
   const mapped = this.mapStatus(soloistStatus);
   if (mapped === 'play' && this.state.status !== 'play') {
     this.lastPlayTransitionAt = Date.now();
+    // The ALSA stream only exists once playback starts. At WebSocket connect
+    // /proc/asound reports "closed", so the sample rate has to be read here or
+    // it is never read at all.
+    this.fetchAudioSpec();
   }
   this.state.status = mapped;
   this.syncSeekTimer();
@@ -820,14 +824,14 @@ SoloistConnect.prototype.pushState = function () {
   this.setVolatile();
   this.state.service = this.servicename;
   this.state.seek = this.currentSeekMs();
+  // The quality tier is measured from the cache and does not depend on ALSA, so
+  // it must not be gated behind audioSpec. fetchAudioSpec runs when the
+  // WebSocket connects, at which point nothing is playing and /proc/asound
+  // reads "closed", so audioSpec stayed unset and a correctly measured tier was
+  // never shown.
+  this.state.bitdepth = this.quality;
   if (this.audioSpec) {
     this.state.samplerate = this.audioSpec.samplerate;
-    // Bit depth is deliberately not the ALSA value. Soloist decodes every
-    // quality into FLOAT_LE and the endpoint reports the chain's S24_LE, so it
-    // read "24 bit" for lossy and lossless alike. This field carries the
-    // Spotify tier instead, which is what the user actually chose, and it lands
-    // where Volumio's UI already shows quality beside the sample rate.
-    this.state.bitdepth = this.quality;
     this.state.channels = this.audioSpec.channels;
   }
   this.commandRouter.servicePushState(this.state, this.servicename);
