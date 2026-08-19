@@ -287,11 +287,8 @@ Four helpers read the lock:
 
 **Takeover**, in `takeOverPlayback()`: clear the yield file, then
 
-- nothing else holds the PCM: claim immediately
-- core already names us, so `volumioStop` would pause us and leave MPD on the device: stop MPD directly
-- otherwise `volumioStop()`
-
-and in every case wait until no other process holds the device before clearing the consume-update service and claiming.
+- core already names us: just claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
+- otherwise `volumioStop()`, then clear the volatile registration and the consume-update service and claim.
 
 Two state rules that are not obvious and both came from real failures:
 

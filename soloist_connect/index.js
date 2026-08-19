@@ -705,7 +705,11 @@ SoloistConnect.prototype.isCurrentService = function () {
 SoloistConnect.prototype.takeOverPlayback = function () {
   this.clearAlsaYield();
 
-  if (!this.alsaHeldByOther()) {
+  // Just play while we are already current is not a takeover.
+  // unSetVolatile runs the volatile callback. That callback is ours
+  // when we hold the session, so calling it here paused Soloist after
+  // every phone play.
+  if (this.isCurrentService()) {
     this.setVolatile();
     return;
   }
@@ -715,7 +719,7 @@ SoloistConnect.prototype.takeOverPlayback = function () {
 
   this.logger.info('SoloistConnect: taking over playback');
 
-  const afterFree = function () {
+  const claim = function () {
     if (sm.isVolatile) {
       sm.unSetVolatile();
     }
@@ -725,31 +729,19 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     self.setVolatile();
   };
 
-  const afterStop = function () {
-    self.waitUntil(function () { return !self.alsaHeldByOther(); }, 2000)
-      .then(afterFree);
-  };
-
   try {
-    // volumioStop stops the current service. If Volumio already thinks we
-    // are current, that would pause us and leave MPD holding the device.
-    if (this.isCurrentService()) {
-      this.commandRouter.executeOnPlugin('music_service', 'mpd', 'stop');
-      afterStop();
-      return;
-    }
     const p = this.context.coreCommand.volumioStop();
     if (p && typeof p.then === 'function') {
-      p.then(afterStop).fail(function (e) {
+      p.then(claim).fail(function (e) {
         self.logger.error('SoloistConnect: playback takeover failed: ' + e);
-        afterStop();
+        claim();
       });
     } else {
-      afterStop();
+      claim();
     }
   } catch (e) {
     this.logger.error('SoloistConnect: playback takeover failed: ' + e);
-    afterStop();
+    claim();
   }
 };
 
