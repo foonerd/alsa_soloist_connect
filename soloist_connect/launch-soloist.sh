@@ -61,6 +61,8 @@ if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
   exit 1
 fi
 
+# pcm.volumio includes softvolume. LocalPlayback does not: it aborted
+# in snd1_pcm_hw_param_get_min and left the DAC at full scale.
 export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
 # Caps the buffer our patched apulse requests, and the Pulse latency it
 # reports. volumioswitch delay is local + target and can sit at ~1.5 s

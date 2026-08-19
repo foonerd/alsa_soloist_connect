@@ -666,17 +666,41 @@ SoloistConnect.prototype.waitUntil = function (pred, timeoutMs) {
 SoloistConnect.prototype.isCurrentService = function () {
   try {
     const state = this.commandRouter.volumioGetState();
-    if (state !== undefined && state.service !== undefined && state.service !== this.servicename) {
-      return false;
-    }
-    return true;
+    return !!(state && state.service === this.servicename);
   } catch (e) {
-    return true;
+    return false;
+  }
+};
+
+SoloistConnect.prototype.otherServicePlaying = function () {
+  try {
+    const state = this.commandRouter.volumioGetState();
+    return !!(
+      state &&
+      state.service &&
+      state.service !== this.servicename &&
+      (state.status === 'play' || state.status === 'pause')
+    );
+  } catch (e) {
+    return false;
   }
 };
 
 SoloistConnect.prototype.takeOverPlayback = function () {
-  if (this.isCurrentService()) {
+  if (this.isCurrentService() && this.alsaHeldByOther()) {
+    const self = this;
+    this.logger.info('SoloistConnect: taking over playback');
+    try {
+      this.commandRouter.executeOnPlugin('music_service', 'mpd', 'stop');
+    } catch (e) {
+      this.logger.error('SoloistConnect: failed to stop MPD: ' + e);
+    }
+    this.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000)
+      .then(function () { self.setVolatile(); });
+    return;
+  }
+
+  if (!this.otherServicePlaying() && !this.alsaHeldByOther()) {
     this.setVolatile();
     return;
   }

@@ -125,6 +125,10 @@ This was a patch series until the stack reached eight files. Every consolidation
 
 Four of the commits are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a ring buffer sized in bytes rather than in time. `git format-patch 5d654ce..HEAD` produces them.
 
+The device-ownership commits are Volumio policy and belong here rather than upstream. `pa_stream_cork` originally set a paused flag and kept the ALSA device open, writing silence into it, which is reasonable for a desktop and wrong on a system where one chain is shared: it held `pcm.volumio` for the entire Connect session. Cork now closes the handle, uncork reopens it, and a reopen that finds the device busy leaves the stream corked and says so once instead of retrying.
+
+One consequence had to be handled with it: closing creates a new device instance, so `hw_ptr` restarts at zero. A release therefore performs the same five operations as `pa_stream_flush` (discard the ring, zero the three indices, reset the clock), because a close and reopen is a stream restart and there is one restart contract in that file, not two.
+
 The repo and commit are pinned in `docker/run-docker-apulse.sh` only. `scripts/build-apulse.sh` has no fallback and fails if they are unset. When the pin was duplicated in both and only one was updated, the runner's value won and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
 
 Four gates now catch a wrong tree, and each compares against something external:
@@ -250,13 +254,48 @@ sequenceDiagram
 
 Behaviour worth knowing when reading `index.js`:
 
-- The plugin takes over playback when Soloist becomes the active Connect device: it stops MPD and clears the consume-update service so `pcm.volumio` is free. Pi I2S is exclusive; x86 HDA and USB often have dmix.
+- **The PCM is the lock.** Device ownership is not tracked with plugin flags; it is read from `/proc/asound/card*/pcm*p/sub*/status`. See [Device ownership](#device-ownership).
 - `is_active` is only trusted when the event actually carries it. Several Soloist events omit it, and treating a missing field as false used to end the session and cause a play/pause loop.
-- Volumio's state machine calls `stop()` on volatile services during normal state syncing. While a Connect session is active those calls are ignored.
+- Volumio's state machine calls `stop()` on volatile services shortly after volatile mode begins. That echo is swallowed for two seconds; every later stop is a real request and is honoured.
 - `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
 - Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
 - The bit depth field carries the Spotify quality tier instead of a bit depth. See [Reporting the quality tier](#reporting-the-quality-tier).
+
+---
+
+## Device ownership
+
+A Volumio source holds the audio device only while it is playing, and publishes state only while it owns the session. This plugin took a long time to get there, because ownership was tracked with plugin-local booleans while the thing actually contended for was the ALSA device.
+
+The model is now the same as bluetooth's `btAudioOutput`: **the PCM is the lock, and a yield does not return until we no longer hold it.** Bluetooth can SIGKILL `bluealsa-aplay`; Soloist cannot be killed, so apulse closes the handle and the plugin waits for the owner to disappear from `/proc/asound`.
+
+Four helpers implement it:
+
+| Function | What it answers |
+|---|---|
+| `alsaOwnerPids()` | every `owner_pid` across the playback substreams |
+| `daemonPids()` | which of those are ours: the unit's `MainPID`, plus any owner whose `comm` is `soloist` or `launch-soloist.sh` |
+| `alsaHeldByUs()` / `alsaHeldByOther()` | the two comparisons |
+| `waitUntil(pred, ms)` | polls at 20 ms with a ceiling, resolving either way |
+
+**Yield**, in `unsetVolatile()` and in `stop()`: pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device instead of racing it. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
+
+**Takeover**, in `takeOverPlayback()`, has three paths:
+
+- core already names us but the PCM is held by someone else: a stale registration with MPD still on the device, so stop MPD directly and wait
+- nothing else playing and nothing else holding the PCM: claim immediately
+- otherwise `volumioStop()`, wait until no other process holds the device, then clear the consume-update service and claim
+
+Two state rules that are not obvious and both came from real failures:
+
+`active` is Spotify Connect device status and is **not** cleared on yield. Clearing it made the next `is_active=true` look like a fresh selection, and the session was stolen back from MPD.
+
+`pendingYieldAt` covers the opposite race. A `play` arriving within 1.5 s of a yield is leftover from the session we just released, not a request, and is treated as a pause.
+
+Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
+
+The corresponding half is in the fork: `pa_stream_cork` releases the ALSA handle rather than holding it and writing silence, and a failed reacquire leaves the stream corked rather than reopening `plug:volumio` in a loop against whoever owns it.
 
 ---
 
@@ -345,6 +384,7 @@ so a skip discarded nothing and the already-committed audio played out. Confirme
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter will not meter this plugin.** Its per-source metering is hardcoded to the `spop` plugin's paths and config format. The screensaver itself does trigger, via its `Other_ON` branch.
+- **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
 - **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
 - armv6 devices are out of scope.
 
