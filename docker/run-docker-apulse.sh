@@ -116,10 +116,18 @@ PAYLOAD_FILES=(
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Pin / override the apulse source the same way ch341 overrides git refs.
-APULSE_REPO="${APULSE_REPO:-https://github.com/i-rinat/apulse.git}"
-# Commit that produced the shipped alsa-lib/* payload (ldd-clean on Bookworm).
-APULSE_REF="${APULSE_REF:-5d654cecd18474b4e0d885e774bc41fcbbc9818b}"
+# The apulse source. github.com/foonerd/apulse is upstream i-rinat/apulse at
+# 5d654ce with the Volumio changes as commits on master.
+#
+# These are passed into the container, so they override the defaults in
+# build-apulse.sh entirely. Keeping the same constant in two places is what let
+# a build clone stock upstream while the build script had been updated to point
+# at the fork: the script's defaults were never reached. If these move, the
+# fallbacks in build-apulse.sh must move with them.
+APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
+# Exact commit, never a branch: a moving pin makes two builds of the same plugin
+# version produce different shims.
+APULSE_REF="${APULSE_REF:-b8ffd4acda327c95422f4739d32b3786a02863a8}"
 
 echo "[+] Source: $APULSE_REPO ($APULSE_REF)"
 echo ""
@@ -127,7 +135,6 @@ echo ""
 echo "[+] Running build inside container..."
 docker run --rm --platform="$PLATFORM" \
   -v "$REPO_DIR/scripts:/build/scripts:ro" \
-  -v "$REPO_DIR/patches:/build/patches:ro" \
   -v "$REPO_DIR/$OUTPUT_DIR:/build/output" \
   -e "ARCH=$ARCH" \
   -e "LIB_PATH=$LIB_PATH" \

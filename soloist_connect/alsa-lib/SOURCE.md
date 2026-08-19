@@ -55,17 +55,48 @@ if `ldd` shows anything other than `libasound` and the base libc family.
 
 ## Source
 
-[i-rinat/apulse](https://github.com/i-rinat/apulse) at
-`5d654cecd18474b4e0d885e774bc41fcbbc9818b`.
+[foonerd/apulse](https://github.com/foonerd/apulse) at
+`b8ffd4acda327c95422f4739d32b3786a02863a8`.
 
-That revision is what `alsa-lib/{amd64,arm64,armhf}/` was built from.
-`ldd` on each `libpulse.so.0` shows only `libasound.so.2` and the base
-libc family.
-
-Override the ref when testing:
+That is a fork of [i-rinat/apulse](https://github.com/i-rinat/apulse) at
+`5d654cecd18474b4e0d885e774bc41fcbbc9818b`, with the Volumio changes as commits
+on `master`. Upstream is unchanged and still reachable:
 
 ```
-APULSE_REF=master ./docker/run-docker-apulse.sh amd64
+git log --oneline 5d654ce..b8ffd4a
 ```
 
-License: MIT (apulse)
+shows exactly what was added, and each commit carries its evidence in its
+message: the device captures, the disassembly, the arithmetic.
+
+These were a patch series until the stack reached eight files. Every
+consolidation shifted the next patch's line numbers, and a hand-edited hunk
+header twice cost a build by silently dropping the hunks after it. Git maintains
+the arithmetic now.
+
+Four of the eight are upstream defects rather than Volumio policy: a
+use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush`
+that discarded nothing alongside an io callback that spun on a level-triggered
+`POLLOUT`, and a `read_index` that collapsed to zero whenever the clock stopped.
+`git format-patch 5d654ce..HEAD` produces those for submission.
+
+The repository and commit are pinned in `docker/run-docker-apulse.sh`, which
+passes both into the container, and mirrored as fallbacks in
+`scripts/build-apulse.sh`. Keep the two in agreement: when only the build script
+was updated to point at the fork, the runner's values won and a build produced
+stock upstream while every gate passed.
+
+The build refuses to proceed if the checked-out tree has no commits on top of
+`5d654ce`, which is what caught that.
+
+Override for testing:
+
+```
+APULSE_REF=<sha> ./docker/run-docker-apulse.sh amd64
+APULSE_REPO=https://github.com/i-rinat/apulse.git APULSE_REF=5d654ce ./docker/run-docker-apulse.sh amd64
+```
+
+The second builds stock upstream, which the commit check rejects. That is
+intentional.
+
+License: MIT (apulse). The fork adds no different terms.

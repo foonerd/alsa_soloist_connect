@@ -21,37 +21,91 @@ OUTPUT_DIR="$BUILD_BASE/output"
 mkdir -p "$OUTPUT_DIR"
 
 #
-# Step 1: clone apulse
+# Step 1: clone the Volumio apulse fork
+#
+# github.com/foonerd/apulse is upstream i-rinat/apulse at 5d654ce with our
+# changes as commits on master. It was a patch series until the stack reached
+# eight files: every consolidation shifted the next patch's line numbers, and a
+# hand-edited hunk header twice cost a build by silently dropping the hunks
+# after it. Git maintains the arithmetic now, and each change keeps its
+# rationale in its commit message.
+#
+# Upstream is unchanged and still reachable: git log 5d654ce..HEAD shows exactly
+# what we added, and git format-patch 5d654ce..HEAD produces submissions for the
+# four fixes that are upstream bugs rather than Volumio policy.
+#
+# HTTPS deliberately: the container has no SSH key, and the fork is public.
 #
 echo "[+] Cloning apulse..."
 cd "$BUILD_BASE"
+APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
+APULSE_REF="${APULSE_REF:-b8ffd4acda327c95422f4739d32b3786a02863a8}"
+
+# Re-clone unless the existing checkout is from the repository we want. A
+# container that has run before may hold a clone of a different remote: the
+# first version of this script skipped the clone whenever any .git existed, and
+# a stale clone of upstream produced a shim with none of our changes in it. The
+# build reported success, the ldd gate passed, and the payload verified, because
+# every one of those checks compares the output to itself.
+if [ -d "$SOURCE_DIR/.git" ]; then
+  HAVE_REMOTE="$(git -C "$SOURCE_DIR" config --get remote.origin.url || true)"
+  if [ "$HAVE_REMOTE" != "$APULSE_REPO" ]; then
+    echo "[+] Existing clone is from $HAVE_REMOTE, wanted $APULSE_REPO; re-cloning"
+    rm -rf "$SOURCE_DIR"
+  fi
+fi
 if [ ! -d "$SOURCE_DIR/.git" ]; then
-  git clone "${APULSE_REPO:-https://github.com/i-rinat/apulse.git}" "$SOURCE_DIR"
+  git clone "$APULSE_REPO" "$SOURCE_DIR"
 fi
 cd "$SOURCE_DIR"
-git checkout "${APULSE_REF:-5d654cecd18474b4e0d885e774bc41fcbbc9818b}"
+
+# Fetch may legitimately fail offline when the pinned commit is already present,
+# so it is not fatal on its own. The checkout below is what must succeed.
+git fetch --all --tags --quiet || echo "[!] warning: fetch failed, using local objects only"
+
+if ! git checkout --quiet --detach "$APULSE_REF"; then
+  echo "[!] ERROR: cannot check out $APULSE_REF from $APULSE_REPO"
+  echo "    The pinned commit is not in this clone. Building whatever HEAD"
+  echo "    happens to be would ship a shim that is not the one requested."
+  exit 1
+fi
+
+# The pin must be an exact commit, not a branch name. A moving pin would make
+# two builds of the same plugin version produce different shims.
+PINNED="$(git rev-parse HEAD)"
+if [ "$PINNED" != "$APULSE_REF" ] && [ "$(git rev-parse --short "$APULSE_REF")" != "$(git rev-parse --short HEAD)" ]; then
+  echo "[!] ERROR: HEAD is $PINNED but $APULSE_REF was requested"
+  exit 1
+fi
+
 echo "[+] apulse at $(git rev-parse --short HEAD) ($(git log -1 --format=%s))"
 
-#
-# Step 1b: apply local patches
-#
-# Applied in filename order against the pinned revision. A patch that does not
-# apply is a hard failure: shipping an unpatched shim would silently restore
-# upstream buffering behaviour.
-#
-PATCH_DIR="$BUILD_BASE/patches"
-if [ -d "$PATCH_DIR" ]; then
-  git checkout -- .
-  for patch in "$PATCH_DIR"/*.patch; do
-    [ -e "$patch" ] || continue
-    echo "[+] Applying $(basename "$patch")"
-    if ! patch -p1 --forward --batch < "$patch"; then
-      echo "[!] ERROR: $(basename "$patch") did not apply to $(git rev-parse --short HEAD)"
-      exit 1
-    fi
-  done
-else
-  echo "[!] ERROR: no patch directory at $PATCH_DIR"
+# Our shim is upstream plus local commits, by definition. None means the wrong
+# tree is being built, which is precisely the failure this check exists to
+# catch: it happened once and produced a stock upstream payload that passed
+# every other gate.
+UPSTREAM_BASE=5d654cecd18474b4e0d885e774bc41fcbbc9818b
+if ! git cat-file -e "$UPSTREAM_BASE^{commit}" 2>/dev/null; then
+  echo "[!] ERROR: upstream base $UPSTREAM_BASE is not in this clone"
+  exit 1
+fi
+
+LOCAL_COMMITS="$(git log --oneline "$UPSTREAM_BASE..HEAD")"
+if [ -z "$LOCAL_COMMITS" ]; then
+  echo "[!] ERROR: no local commits on top of upstream $UPSTREAM_BASE"
+  echo "    This is stock apulse. The Volumio shim requires the fork's commits;"
+  echo "    building without them would ship upstream behaviour silently."
+  exit 1
+fi
+
+echo "[+] upstream base: $(git rev-parse --short $UPSTREAM_BASE)"
+echo "[+] local commits on top of upstream:"
+printf '%s\n' "$LOCAL_COMMITS" | sed 's/^/      /'
+
+# A tree that is not clean means the pin does not describe what is being built.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "[!] ERROR: apulse working tree is dirty at $PINNED"
+  git status --short
   exit 1
 fi
 
@@ -116,7 +170,7 @@ if [ -f apulse ]; then
   chmod 0755 "$OUTPUT_DIR/apulse"
 fi
 
-echo "$(git -C "$SOURCE_DIR" rev-parse HEAD)" > "$OUTPUT_DIR/SOURCE_REVISION"
+echo "$PINNED" > "$OUTPUT_DIR/SOURCE_REVISION"
 
 #
 # Step 5: ldd gate — fail if anything not on a stock Volumio image is linked

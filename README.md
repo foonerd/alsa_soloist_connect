@@ -27,7 +27,7 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a private copy of [apulse](https://github.com/i-rinat/apulse), a PulseAudio client API implementation that talks to ALSA directly, and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 apulse opens `pcm.volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply.
 
-The copy is patched. See [`patches/`](patches) and [Buffering and the ALSA chain](#buffering-and-the-alsa-chain).
+The copy is modified. It is built from [foonerd/apulse](https://github.com/foonerd/apulse), upstream at `5d654ce` with the Volumio changes as commits on `master`. See [Source](#the-apulse-fork).
 
 ```mermaid
 flowchart LR
@@ -55,7 +55,6 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | apulse payload, built and installed by the Docker matrix. |
 | `soloist_connect/alsa-lib/LICENSE.apulse` | apulse licence, travels with the binaries it covers. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
-| `patches/` | Patches applied to apulse in the container, in filename order. |
 | `docker/` | One Bookworm Dockerfile per architecture, plus the runner. |
 | `scripts/build-apulse.sh` | Runs inside the container. |
 | `build-matrix.sh` | Builds all three architectures. |
@@ -80,8 +79,8 @@ flowchart LR
     C --> E
     D --> E
     E --> F["scripts/build-apulse.sh"]
-    F --> G["clone apulse at pinned ref"]
-    G --> H["apply patches/"]
+    F --> G["clone foonerd/apulse at pinned commit"]
+    G --> H["verify remote, checkout, HEAD, local commits"]
     H --> I["cmake with static glib and pcre2"]
     I --> J["ldd gate"]
     J --> K["out/ARCH/"]
@@ -112,19 +111,36 @@ Override the source revision when testing:
 APULSE_REF=master ./docker/run-docker-apulse.sh amd64
 ```
 
-### Patches
+### The apulse fork
 
-`patches/*.patch` are applied in the container, in filename order, against the pinned revision.
-A patch that does not apply fails the build rather than silently shipping stock apulse.
+The shim is built from [foonerd/apulse](https://github.com/foonerd/apulse), pinned to an exact commit. That is upstream [i-rinat/apulse](https://github.com/i-rinat/apulse) at `5d654ce` with the Volumio changes as commits on `master`:
 
-| Patch | What |
-|---|---|
-| `0001-apulse-clamp-tlength.patch` | Caps `buffer_attr.tlength` from `APULSE_MAX_TLENGTH_MS`. |
-| `0002-apulse-stream-owns-context-ref.patch` | Fixes a use-after-free that killed the daemon with SIGFPE on every stop. |
-| `0003-apulse-cap-reported-latency.patch` | Caps Pulse `get_latency` / `get_timing_info` to the same tlength. Does not touch ALSA rate negotiation. |
+```
+git log --oneline 5d654ce..HEAD
+```
 
-Both carry their evidence in the patch header.
-Generate any new patch as a real diff against the patched tree rather than by hand; hand-written line numbers applied with fuzz and shifted the next patch into failing.
+Each commit carries its evidence in its message: the device captures, the disassembly, the arithmetic that justified it.
+
+This was a patch series until the stack reached eight files. Every consolidation shifted the next patch's line numbers, and a hand-edited hunk header twice cost a build by silently dropping every hunk after it. Git maintains the arithmetic now, and a change is a commit rather than a diff to be transcribed.
+
+Four of the eight are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a `read_index` that collapsed to zero whenever the clock stopped. `git format-patch 5d654ce..HEAD` produces them.
+
+The repo and commit are pinned in `docker/run-docker-apulse.sh`, which passes both into the container as environment variables, and mirrored as fallbacks in `scripts/build-apulse.sh`. **Keep the two in agreement.** When only the build script was updated to point at the fork, the runner's values won, and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
+
+Four gates now catch a wrong tree, and each compares against something external:
+
+- the existing clone's remote must match the requested repository, or it is re-cloned
+- the checkout of the pinned commit must succeed
+- `HEAD` must equal the requested commit afterwards
+- there must be commits on top of `5d654ce`, since the shim is upstream plus changes by definition
+
+The last one is what caught the stock build.
+
+Override for testing:
+
+```
+APULSE_REF=<sha> ./docker/run-docker-apulse.sh amd64
+```
 
 ### The ldd gate
 
