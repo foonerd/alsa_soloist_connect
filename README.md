@@ -285,15 +285,17 @@ Four helpers read the lock:
 
 **Yield** happens in `unsetVolatile()` and in `stop()`, and nowhere else: request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
 
-**Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight` and runs in order:
+**Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight`:
 
 1. if core already names us, clear the yield file and claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
-2. otherwise request the yield and wait until we no longer hold the PCM
-3. drop our own volatile registration, so `volumioStop` stops the other service rather than pausing us
-4. `volumioStop()`, then wait until no other process holds the device
-5. clear the yield file, clear the consume-update service, claim
+2. otherwise, synchronously: request the yield, set `mpd.ignoreUpdate(true)`, clear the consume-update service, and drop our own volatile registration so `volumioStop` stops the other service rather than pausing us
+3. `volumioStop()`, then wait until no other process holds the device
+4. if MPD is still playing, abort without claiming
+5. otherwise clear the other service's registration, claim, and clear the yield file
 
-Both waits log if they expire rather than proceeding silently.
+`ignoreUpdate` is why step 2 exists at all. MPD announces its stop, `syncState` reads that as end-of-track and starts the next queue item, and MPD is back on `pcm.volumio` alongside Soloist. ytcr and squeezelite_mc mute it the same way. It is cleared on start, on stop, on yield, in `unsetVolatile` and on abort, so it can never be left latched.
+
+The abort path is deliberate: a takeover that cannot get the device does not claim the session. Claiming anyway left Volumio pointing at a service that was not making sound.
 
 Two state rules that are not obvious and both came from real failures:
 

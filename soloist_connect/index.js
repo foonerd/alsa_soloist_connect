@@ -175,6 +175,7 @@ SoloistConnect.prototype.onStart = function () {
   }
 
   this.clearAlsaYield();
+  this.setMpdIgnoreUpdate(false);
   this.startDaemon()
     .then(() => {
       self.connectWebSocket();
@@ -192,6 +193,7 @@ SoloistConnect.prototype.onStop = function () {
   const defer = libQ.defer();
   this.disconnectWebSocket();
   this.unsetVolatile();
+  this.setMpdIgnoreUpdate(false);
   exec(`/usr/bin/sudo /bin/systemctl stop ${SERVICE_UNIT}`, () => defer.resolve());
   return defer.promise;
 };
@@ -706,6 +708,24 @@ SoloistConnect.prototype.isCurrentService = function () {
   }
 };
 
+SoloistConnect.prototype.mpdPlugin = function () {
+  try {
+    return this.commandRouter.pluginManager.getPlugin('music_service', 'mpd') || null;
+  } catch (e) {
+    return null;
+  }
+};
+
+// MPD's stop announcement is treated as end-of-track: syncState then plays
+// the next queue item. ytcr and squeezelite_mc mute that with ignoreUpdate
+// before volumioStop. Without it, Soloist and MPD write pcm.volumio together.
+SoloistConnect.prototype.setMpdIgnoreUpdate = function (ignore) {
+  const mpd = this.mpdPlugin();
+  if (mpd && typeof mpd.ignoreUpdate === 'function') {
+    mpd.ignoreUpdate(!!ignore);
+  }
+};
+
 SoloistConnect.prototype.takeOverPlayback = function () {
   if (this.isCurrentService()) {
     this.clearAlsaYield();
@@ -721,21 +741,28 @@ SoloistConnect.prototype.takeOverPlayback = function () {
   this.logger.info('SoloistConnect: taking over playback');
   this.takeoverInFlight = true;
   this.requestAlsaYield();
+  this.setMpdIgnoreUpdate(true);
+  if (typeof sm.setConsumeUpdateService === 'function') {
+    sm.setConsumeUpdateService(undefined);
+  }
 
-  const dropOurVolatile = function () {
-    if (sm.isVolatile && sm.volatileService === self.servicename) {
-      self.volatileSet = false;
-      try {
-        sm.unSetVolatile();
-      } catch (e) {
-        /* already cleared */
-      }
+  if (sm.isVolatile && sm.volatileService === this.servicename) {
+    this.volatileSet = false;
+    try {
+      sm.unSetVolatile();
+    } catch (e) {
+      /* already cleared */
     }
+  }
+
+  const abort = function (reason) {
+    self.logger.error('SoloistConnect: ' + reason);
+    self.takeoverInFlight = false;
+    self.setMpdIgnoreUpdate(false);
   };
 
   const claim = function () {
-    self.clearAlsaYield();
-    if (sm.isVolatile) {
+    if (sm.isVolatile && sm.volatileService !== self.servicename) {
       self.volatileSet = false;
       try {
         sm.unSetVolatile();
@@ -747,10 +774,11 @@ SoloistConnect.prototype.takeOverPlayback = function () {
       sm.setConsumeUpdateService(undefined);
     }
     self.setVolatile();
+    self.clearAlsaYield();
+    self.takeoverInFlight = false;
   };
 
   const stopOthers = function () {
-    dropOurVolatile();
     try {
       const p = self.context.coreCommand.volumioStop();
       if (p && typeof p.then === 'function') {
@@ -762,27 +790,31 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     return libQ.resolve();
   };
 
-  this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)
-    .then(function () {
-      if (self.alsaHeldByUs()) {
-        self.logger.error('SoloistConnect: still holding ALSA at takeover');
-      }
-    })
-    .then(stopOthers)
+  const mpdStillPlaying = function () {
+    try {
+      const state = self.commandRouter.volumioGetState();
+      return !!(state && state.service === 'mpd' && state.status === 'play');
+    } catch (e) {
+      return false;
+    }
+  };
+
+  stopOthers()
     .then(function () {
       return self.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000);
     })
     .then(function () {
+      if (mpdStillPlaying()) {
+        abort('MPD still playing after stop; not claiming');
+        return;
+      }
       if (self.alsaHeldByOther()) {
         self.logger.error('SoloistConnect: other ALSA owner still present after stop');
       }
-      self.takeoverInFlight = false;
       claim();
     })
     .fail(function (e) {
-      self.logger.error('SoloistConnect: playback takeover failed: ' + e);
-      self.takeoverInFlight = false;
-      claim();
+      abort('playback takeover failed: ' + e);
     });
 };
 
@@ -1094,6 +1126,7 @@ SoloistConnect.prototype.setVolatile = function () {
 SoloistConnect.prototype.unsetVolatile = function () {
   if (!this.volatileSet) return;
   this.volatileSet = false;
+  this.setMpdIgnoreUpdate(false);
   if (this.pushStateTimer) {
     clearImmediate(this.pushStateTimer);
     this.pushStateTimer = null;
@@ -1132,6 +1165,7 @@ SoloistConnect.prototype.stop = function () {
     return libQ.resolve();
   }
   this.logger.info('SoloistConnect: yielding playback');
+  this.setMpdIgnoreUpdate(false);
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
   this.sendCommand({ command: 'pause' });
