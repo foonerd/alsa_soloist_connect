@@ -755,12 +755,6 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     }
   }
 
-  const abort = function (reason) {
-    self.logger.error('SoloistConnect: ' + reason);
-    self.takeoverInFlight = false;
-    self.setMpdIgnoreUpdate(false);
-  };
-
   const claim = function () {
     if (sm.isVolatile && sm.volatileService !== self.servicename) {
       self.volatileSet = false;
@@ -790,31 +784,14 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     return libQ.resolve();
   };
 
-  const mpdStillPlaying = function () {
-    try {
-      const state = self.commandRouter.volumioGetState();
-      return !!(state && state.service === 'mpd' && state.status === 'play');
-    } catch (e) {
-      return false;
-    }
-  };
-
   stopOthers()
     .then(function () {
       return self.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000);
     })
-    .then(function () {
-      if (mpdStillPlaying()) {
-        abort('MPD still playing after stop; not claiming');
-        return;
-      }
-      if (self.alsaHeldByOther()) {
-        self.logger.error('SoloistConnect: other ALSA owner still present after stop');
-      }
-      claim();
-    })
+    .then(claim)
     .fail(function (e) {
-      abort('playback takeover failed: ' + e);
+      self.logger.error('SoloistConnect: playback takeover failed: ' + e);
+      claim();
     });
 };
 
