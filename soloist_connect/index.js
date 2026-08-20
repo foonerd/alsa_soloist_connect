@@ -579,8 +579,10 @@ SoloistConnect.prototype.updateActive = function (msg) {
 //
 // Cork is not a close. Yield is unsetVolatile/stop only: write YIELD_PATH
 // so apulse closes the PCM, then wait until /proc/asound shows it gone.
-// Bluetooth SIGKILLs bluealsa-aplay; we cannot kill Soloist. Takeover is
-// the reverse: drop the yield file, stop whoever holds the device, claim.
+// Bluetooth SIGKILLs bluealsa-aplay; we cannot kill Soloist. Takeover
+// stops whoever else holds the device and claims volatile. It must not
+// yield: first play has already opened pcm.volumio (Peppyalsa 16384 vs
+// our 22050). Yielding then reopening is what failed avail() on hanger.
 //
 // `active` is Spotify Connect device status. It is not cleared on yield:
 // clearing it made the next is_active=true look like a new selection and
@@ -741,7 +743,6 @@ SoloistConnect.prototype.takeOverPlayback = function () {
 
   this.logger.info('SoloistConnect: taking over playback');
   this.takeoverInFlight = true;
-  this.requestAlsaYield();
   this.setMpdIgnoreUpdate(true);
   if (typeof sm.setConsumeUpdateService === 'function') {
     sm.setConsumeUpdateService(undefined);
@@ -834,8 +835,8 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'position_sync':
       // Update the anchor only. A full push here used to sit on the
-      // coalesced timer and delay skip UI. The seek timer publishes
-      // the moving bar; a large jump (user seek) pushes immediately.
+      // coalesced timer and delay skip UI. The seek timer ticks locally;
+      // a large jump (user seek) still publishes immediately.
       {
         const before = this.currentSeekMs();
         this.applyPosition(msg.position);
@@ -955,8 +956,13 @@ SoloistConnect.prototype.currentSeekMs = function () {
   );
 };
 
-// Volatile getState() returns a snapshot. The UI does not advance seek
-// on its own. Tick locally and push once a second while playing.
+// Tick seek locally. Do not servicePushState from this timer.
+//
+// A full publish runs the state machine, volumiodiscovery, every UI, and
+// MRS "multiroomSync output update". MRS plus volumioswitch then fails
+// snd_pcm_avail(softvolume) and the DAC XRUNs — DSD and modular alike.
+// Stock spop only does `this.state.seek += 1000` here. getState() already
+// returns currentSeekMs(); real status/track changes still publish.
 SoloistConnect.prototype.syncSeekTimer = function () {
   if (this.state.status === 'play' && this.active) {
     if (this.seekTimer) return;
@@ -966,9 +972,6 @@ SoloistConnect.prototype.syncSeekTimer = function () {
         return;
       }
       this.state.seek = this.currentSeekMs();
-      if (this.volatileSet) {
-        this.publishState(this.stateSnapshot());
-      }
     }, 1000);
     return;
   }

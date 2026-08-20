@@ -257,6 +257,7 @@ Behaviour worth knowing when reading `index.js`:
 - **The PCM is the lock.** Device ownership is not tracked with plugin flags; it is read from `/proc/asound/card*/pcm*p/sub*/status`. See [Device ownership](#device-ownership).
 - `is_active` is only trusted when the event actually carries it. Several Soloist events omit it, and treating a missing field as false used to end the session and cause a play/pause loop.
 - Volumio's state machine calls `stop()` on volatile services shortly after volatile mode begins. That echo is swallowed for two seconds; every later stop is a real request and is honoured.
+- **The seek timer does not publish.** It advances `seek` locally once a second, as the stock Spotify plugin does. A publish per second runs the state machine, `volumiodiscovery`, every interface plugin and MRS's multiroom sync; that plus `volumioswitch` failed `snd_pcm_avail(softvolume)` and XRUN'd the DAC on first play. `getState()` already returns the interpolated position, and real status and track changes still publish.
 - `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start. `idle` is mapped the same way while playing: it is the gap between Spotify tracks, not a source stop, and publishing it as `stop` hit Volumio's end-of-block path, which starts the next queue item, while our own `stop()` paused Soloist. Nothing advanced.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
 - Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
@@ -288,9 +289,11 @@ Four helpers read the lock:
 **Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight`:
 
 1. if core already names us, or we already hold the session, clear the yield file and claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
-2. otherwise, synchronously: request the yield, set `mpd.ignoreUpdate(true)`, clear the consume-update service, and drop our own volatile registration so `volumioStop` stops the other service rather than pausing us
+2. otherwise, synchronously: set `mpd.ignoreUpdate(true)`, clear the consume-update service, and drop our own volatile registration so `volumioStop` stops the other service rather than pausing us
 3. `volumioStop()`, then wait until no other process holds the device
 4. claim, and clear the yield file
+
+**Takeover must not yield.** On first play the device is already open, and Peppyalsa negotiates a different period than we do (16384 against 22050). Releasing our own handle and reopening in that state failed `avail()`. Takeover displaces whoever else holds the device; it does not release ours.
 
 `ignoreUpdate` is why step 2 exists at all. MPD announces its stop, `syncState` reads that as end-of-track and starts the next queue item, and MPD is back on `pcm.volumio` alongside Soloist. ytcr and squeezelite_mc mute it the same way. It is cleared on start, on stop, on yield and in `unsetVolatile`, so it can never be left latched.
 
