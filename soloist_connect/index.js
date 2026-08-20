@@ -61,12 +61,15 @@ function SoloistConnect(context) {
   this.pushStateTimer = null;
   this.pushStateDirty = false;
   this.volumeTimer = null;
+  this.volumeFromSoloistTimer = null;
   this.lastSentVolume = -1;
   this.volumeFromSoloist = false;
+  this.pendingMixerVolume = null;
   this.quality = '';       // Spotify tier for the current track, '' until known
   this.qualityUri = '';    // track the last measurement was taken against
   this.qualityPath = '';   // cache file that track was reading from
   this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
+  this.takeoverInFlight = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +307,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
     `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
     `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
+    `EXTERNAL_VOLUME="${this.mixerIsExternal() ? 'true' : 'false'}"`,
     // Read by uninstall.sh, which runs after the plugin config has been
     // rendered unreadable and cannot consult it.
     `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
@@ -703,25 +707,41 @@ SoloistConnect.prototype.isCurrentService = function () {
 };
 
 SoloistConnect.prototype.takeOverPlayback = function () {
-  this.clearAlsaYield();
-
-  // Just play while we are already current is not a takeover.
-  // unSetVolatile runs the volatile callback. That callback is ours
-  // when we hold the session, so calling it here paused Soloist after
-  // every phone play.
   if (this.isCurrentService()) {
+    this.clearAlsaYield();
     this.setVolatile();
     return;
   }
+
+  if (this.takeoverInFlight) return;
 
   const self = this;
   const sm = this.context.coreCommand.stateMachine;
 
   this.logger.info('SoloistConnect: taking over playback');
+  this.takeoverInFlight = true;
+  this.requestAlsaYield();
+
+  const dropOurVolatile = function () {
+    if (sm.isVolatile && sm.volatileService === self.servicename) {
+      self.volatileSet = false;
+      try {
+        sm.unSetVolatile();
+      } catch (e) {
+        /* already cleared */
+      }
+    }
+  };
 
   const claim = function () {
+    self.clearAlsaYield();
     if (sm.isVolatile) {
-      sm.unSetVolatile();
+      self.volatileSet = false;
+      try {
+        sm.unSetVolatile();
+      } catch (e) {
+        /* already cleared */
+      }
     }
     if (typeof sm.setConsumeUpdateService === 'function') {
       sm.setConsumeUpdateService(undefined);
@@ -729,20 +749,41 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     self.setVolatile();
   };
 
-  try {
-    const p = this.context.coreCommand.volumioStop();
-    if (p && typeof p.then === 'function') {
-      p.then(claim).fail(function (e) {
-        self.logger.error('SoloistConnect: playback takeover failed: ' + e);
-        claim();
-      });
-    } else {
-      claim();
+  const stopOthers = function () {
+    dropOurVolatile();
+    try {
+      const p = self.context.coreCommand.volumioStop();
+      if (p && typeof p.then === 'function') {
+        return p;
+      }
+    } catch (e) {
+      self.logger.error('SoloistConnect: playback takeover failed: ' + e);
     }
-  } catch (e) {
-    this.logger.error('SoloistConnect: playback takeover failed: ' + e);
-    claim();
-  }
+    return libQ.resolve();
+  };
+
+  this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)
+    .then(function () {
+      if (self.alsaHeldByUs()) {
+        self.logger.error('SoloistConnect: still holding ALSA at takeover');
+      }
+    })
+    .then(stopOthers)
+    .then(function () {
+      return self.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000);
+    })
+    .then(function () {
+      if (self.alsaHeldByOther()) {
+        self.logger.error('SoloistConnect: other ALSA owner still present after stop');
+      }
+      self.takeoverInFlight = false;
+      claim();
+    })
+    .fail(function (e) {
+      self.logger.error('SoloistConnect: playback takeover failed: ' + e);
+      self.takeoverInFlight = false;
+      claim();
+    });
 };
 
 SoloistConnect.prototype.handleEvent = function (msg) {
@@ -772,6 +813,10 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       this.pushStateNow();
       break;
 
+    case 'volume_changed':
+      if (typeof msg.volume === 'number') this.applySoloistVolume(msg.volume);
+      break;
+
     case 'device_changed':
       this.updateActive(msg);
       if (!this.active) this.unsetVolatile();
@@ -799,7 +844,8 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 SoloistConnect.prototype.setStatus = function (soloistStatus) {
   const mapped = this.mapStatus(soloistStatus);
   if (mapped === 'play' && this.state.status !== 'play') {
-    if (this.pendingYieldAt && Date.now() - this.pendingYieldAt < 1500) {
+    if (this.pendingYieldAt && Date.now() - this.pendingYieldAt < 1500 &&
+        !this.isCurrentService()) {
       this.state.status = 'pause';
       this.syncSeekTimer();
       return;
@@ -1042,6 +1088,7 @@ SoloistConnect.prototype.setVolatile = function () {
     this.ignoreStopTimer = null;
     this.ignoreStopEvent = false;
   }, 2000);
+  this.flushPendingMixerVolume();
 };
 
 SoloistConnect.prototype.unsetVolatile = function () {
@@ -1054,6 +1101,7 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.pushStateDirty = false;
   this.stopSeekTimer();
   this.state = this.emptyState();
+  this.pendingMixerVolume = null;
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
   this.sendCommand({ command: 'pause' });
@@ -1103,11 +1151,13 @@ SoloistConnect.prototype.pause = function () {
 };
 
 SoloistConnect.prototype.play = function () {
+  this.pendingYieldAt = 0;
   this.sendCommand({ command: 'play' });
   return libQ.resolve();
 };
 
 SoloistConnect.prototype.resume = function () {
+  this.pendingYieldAt = 0;
   this.sendCommand({ command: 'play' });
   return libQ.resolve();
 };
@@ -1155,24 +1205,88 @@ SoloistConnect.prototype.getState = function () {
   return this.stateSnapshot();
 };
 
-SoloistConnect.prototype.applySoloistVolume = function (vol) {
-  this.state.volume = vol;
-  this.lastSentVolume = vol;
-  this.volumeFromSoloist = true;
-  setImmediate(() => {
-    this.volumeFromSoloist = false;
-  });
+// SoftMaster / hardware mixer is the attenuator. Pulse sink-input volume
+// is Connect protocol only (same as spop external_volume). Mixer type None
+// has no ALSA gain, so the shim must keep scaling.
+SoloistConnect.prototype.mixerIsExternal = function () {
+  try {
+    const t = this.commandRouter.executeOnPlugin(
+      'audio_interface',
+      'alsa_controller',
+      'getConfigParam',
+      'mixer_type'
+    );
+    return !!(t && t !== 'None');
+  } catch (e) {
+    return true;
+  }
 };
 
-// Volumio mixer already applies pcm.volumio. Mirror the knob to Connect
-// so the Spotify app slider matches. Collapse bursts — do not queue a
-// set_volume per tick in front of skip/pause (Soloist handles commands
-// serially; that queue was seconds of lag).
+SoloistConnect.prototype.clearVolumeFromSoloist = function () {
+  this.volumeFromSoloist = false;
+  if (this.volumeFromSoloistTimer) {
+    clearTimeout(this.volumeFromSoloistTimer);
+    this.volumeFromSoloistTimer = null;
+  }
+};
+
+SoloistConnect.prototype.commitMixerVolume = function (rounded) {
+  this.volumeFromSoloist = true;
+  if (this.volumeFromSoloistTimer) clearTimeout(this.volumeFromSoloistTimer);
+  this.volumeFromSoloistTimer = setTimeout(() => {
+    this.volumeFromSoloist = false;
+    this.volumeFromSoloistTimer = null;
+  }, 1500);
+  this.commandRouter.volumiosetvolume(rounded);
+};
+
+SoloistConnect.prototype.flushPendingMixerVolume = function () {
+  if (this.pendingMixerVolume == null) return;
+  if (!this.mixerIsExternal() || !this.active || !this.volatileSet) return;
+  const rounded = this.pendingMixerVolume;
+  this.pendingMixerVolume = null;
+  this.commitMixerVolume(rounded);
+};
+
+SoloistConnect.prototype.applySoloistVolume = function (vol) {
+  if (typeof vol !== 'number' || isNaN(vol)) return;
+  const rounded = Math.round(vol);
+  this.state.volume = rounded;
+
+  if (Math.abs(rounded - this.lastSentVolume) < 2) {
+    this.lastSentVolume = rounded;
+    return;
+  }
+  this.lastSentVolume = rounded;
+
+  // Connect-only: no mixer to move, Pulse remains the gain.
+  if (!this.mixerIsExternal()) return;
+
+  // SoftMaster/HW must not be written while MPD still owns the PCM.
+  // playback_state on first claim runs takeOverPlayback (async volumioStop)
+  // then used to call volumiosetvolume in the same tick. That amixer on a
+  // foreign softvolume is the update-check / leftover-local path.
+  if (!this.active || !this.volatileSet) {
+    this.pendingMixerVolume = rounded;
+    return;
+  }
+  this.commitMixerVolume(rounded);
+};
+
+// Mirror the knob to Connect so the Spotify app slider matches. Collapse
+// bursts — do not queue a set_volume per tick in front of skip/pause
+// (Soloist handles commands serially; that queue was seconds of lag).
 SoloistConnect.prototype.onVolumioVolume = function (data) {
-  if (!this.active || this.volumeFromSoloist) return;
+  if (!this.active) return;
+  if (data && data.disableVolumeControl) return;
   const vol = data && typeof data.vol === 'number' ? data.vol : data;
   if (typeof vol !== 'number' || isNaN(vol)) return;
   const rounded = Math.round(vol);
+  if (this.volumeFromSoloist) {
+    this.lastSentVolume = rounded;
+    this.clearVolumeFromSoloist();
+    return;
+  }
   if (Math.abs(rounded - this.lastSentVolume) < 2) return;
   if (this.volumeTimer) clearTimeout(this.volumeTimer);
   this.volumeTimer = setTimeout(() => {

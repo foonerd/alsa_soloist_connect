@@ -9,7 +9,7 @@
   "DEVICE_NAME": "Device Name",
   "DEVICE_NAME_DOC": "The name shown in the Spotify app's device list.",
   "INITIAL_VOLUME": "Initial Volume (0-100)",
-  "INITIAL_VOLUME_DOC": "Connect-side volume when Soloist starts (0-100). System loudness is the Volumio mixer on pcm.volumio.",
+  "INITIAL_VOLUME_DOC": "Connect-side volume when Soloist starts (0-100). Mirrored to the Volumio mixer; the stream itself stays full scale.",
   "CACHE_SIZE": "Cache Size (MB)",
   "CACHE_SIZE_DOC": "Maximum playback cache size. Use 0 for unlimited; otherwise minimum 100.",
   "VERBOSE": "Verbose Logging",

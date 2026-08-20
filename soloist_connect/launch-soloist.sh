@@ -75,12 +75,21 @@ case "${TLENGTH_MS:-}" in
   ''|0|*[!0-9]*) TLENGTH_MS=500 ;;
 esac
 export APULSE_MAX_TLENGTH_MS="$TLENGTH_MS"
+# SoftMaster (or a hardware mixer) is the attenuator. Pulse sink-input
+# volume still tracks the Connect slider; the shim must not multiply
+# samples or peppyalsa sees the knob. Mixer type None leaves this unset
+# so the shim remains the only gain.
+if [ "${EXTERNAL_VOLUME:-}" = "true" ]; then
+  export APULSE_EXTERNAL_VOLUME=1
+else
+  unset APULSE_EXTERNAL_VOLUME
+fi
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
-echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms uname=$(uname -m)" >&2
+echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} uname=$(uname -m)" >&2
 
-# writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME and
-# CACHE_SIZE, and validates them before writing. No conditional assembly here.
+# writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
+# CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.
 ARGS=(
   --device-name "$DEVICE_NAME"
   --api-key "$API_KEY"

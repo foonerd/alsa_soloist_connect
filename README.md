@@ -285,10 +285,15 @@ Four helpers read the lock:
 
 **Yield** happens in `unsetVolatile()` and in `stop()`, and nowhere else: request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
 
-**Takeover**, in `takeOverPlayback()`: clear the yield file, then
+**Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight` and runs in order:
 
-- core already names us: just claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
-- otherwise `volumioStop()`, then clear the volatile registration and the consume-update service and claim.
+1. if core already names us, clear the yield file and claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
+2. otherwise request the yield and wait until we no longer hold the PCM
+3. drop our own volatile registration, so `volumioStop` stops the other service rather than pausing us
+4. `volumioStop()`, then wait until no other process holds the device
+5. clear the yield file, clear the consume-update service, claim
+
+Both waits log if they expire rather than proceeding silently.
 
 Two state rules that are not obvious and both came from real failures:
 
@@ -299,6 +304,24 @@ Two state rules that are not obvious and both came from real failures:
 Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
 
 The corresponding half is in the fork: the PCM survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the yield file appears.
+
+---
+
+## Volume
+
+Where the attenuation happens depends on Volumio's mixer, read from `alsa_controller`'s `mixer_type`.
+
+With a mixer, SoftMaster or hardware, that mixer is the attenuator and the source must stay at full scale. The Spotify app's slider is mirrored into Volumio's fader with `volumiosetvolume`, so the signal entering the chain is pre-fader. This is what PeppyMeter needs: a meter reads the signal where it is inserted, above the fader, so a scaled source makes the needle follow the volume knob rather than the music.
+
+With `mixer_type` `None` there is no ALSA gain anywhere, so the shim keeps scaling and the mixer is left alone.
+
+Two rules that are not obvious:
+
+**Mixer writes are gated on ownership.** A value arriving before we are `active` and volatile is parked in `pendingMixerVolume` and flushed at the end of `setVolatile()`. The first `playback_state` runs `takeOverPlayback`, whose `volumioStop` is asynchronous, so writing the mixer in the same tick meant an `amixer` against a softvolume MPD still owned.
+
+**The echo guard is a timer, not a tick.** `volumeFromSoloist` is a 1.5 s window cleared by the returning event. A `setImmediate` expired long before the mixer round trip came back, so our own change was read as the user's and mirrored to Connect again.
+
+Both directions use a two-step deadband, and the outbound mirror collapses bursts so a slider drag does not queue one `set_volume` per tick ahead of a skip: Soloist handles commands serially and that queue was seconds of lag.
 
 ---
 
@@ -386,7 +409,7 @@ so a skip discarded nothing and the already-committed audio played out. Confirme
 - **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
-- **PeppyMeter will not meter this plugin.** Its per-source metering is hardcoded to the `spop` plugin's paths and config format. The screensaver itself does trigger, via its `Other_ON` branch.
+- **PeppyMeter needles follow the signal, not the volume knob.** That depends on Volumio owning the attenuation; see [Volume](#volume). Its per-source metering is still hardcoded to the `spop` plugin's paths and config format, so the plugin is not metered as a Spotify source. The screensaver itself does trigger, via its `Other_ON` branch.
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
 - **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
 - armv6 devices are out of scope.
