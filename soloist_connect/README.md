@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.3.0.**
+> **Alpha, version 0.4.0.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -69,6 +69,23 @@ Sample rate and quality shown in the Volumio UI are worked out on the device.
 Soloist does not report either, so the sample rate comes from the open ALSA stream and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
 Rapid skipping produces no measurement, so the last known tier stays on screen rather than being replaced by a guess.
 
+### Sharing the output with other sources
+
+The device is held only while Spotify is playing.
+
+Pausing in the Spotify app keeps it, so resuming is instant.
+Starting anything else in Volumio, a local album, a web radio, another plugin, takes it: Spotify pauses and the new source plays.
+
+The player stays in the Spotify app's device list throughout.
+Switching source in Volumio does not end the Connect session, so pressing play on the phone again brings it straight back without re-selecting the device.
+
+### Volume
+
+When Volumio has a mixer, hardware or software, that mixer does the attenuation and the Spotify app's slider moves it.
+The stream itself stays at full scale, which is what VU meters and other per-source metering need: the needles follow the music rather than the volume knob.
+
+With the mixer set to `None` there is nothing downstream to attenuate, so the volume is applied to the stream instead.
+
 ---
 
 ## Supported devices
@@ -93,6 +110,9 @@ A device left powered off past the expiry will refresh on its next start, provid
 **Skip and seek are not instant.**
 Volumio's ALSA chain buffers audio ahead of the DAC, and it applies the Output Buffer setting twice, so the delay is roughly double the value you set.
 Lowering the setting shortens it; too low risks dropouts on a busy device.
+
+**Lossless needs a moment at the start of a track.**
+At lossless the plugin buffers half a second of audio before the DAC, which is why skip and seek take longer there than at the lossy tiers.
 
 **The Soloist binary is not part of this package.**
 It is downloaded from Spotify's official CDN during install, because Spotify does not permit redistributing it.
@@ -123,6 +143,7 @@ Common cases:
 
 - **Nothing plays and the log shows exit code 10.** The Soloist build expired. Press the update button in the plugin settings.
 - **The device does not appear in the Spotify app.** Check that the API key was saved, that the daemon is running, and that the device and phone are on the same network segment.
+- **Another source will not start while Spotify is connected.** Should not happen from 0.4.0 onwards. If it does, `journalctl -u volumio -f | grep -i soloist` around the moment you switch will show whether the device was released.
 - **Install failed with "apulse shim missing".** The package was built without the libraries for this architecture. Report it, including the architecture reported by `dpkg --print-architecture`.
 
 When reporting a problem, **never post your API key, unredacted logs, crash reports or the contents of `/data/soloist`.**
