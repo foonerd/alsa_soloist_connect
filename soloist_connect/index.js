@@ -727,7 +727,7 @@ SoloistConnect.prototype.setMpdIgnoreUpdate = function (ignore) {
 };
 
 SoloistConnect.prototype.takeOverPlayback = function () {
-  if (this.isCurrentService()) {
+  if (this.isCurrentService() || this.volatileSet) {
     this.clearAlsaYield();
     this.setVolatile();
     return;
@@ -900,7 +900,11 @@ SoloistConnect.prototype.mapStatus = function (s) {
   // makes Volumio's state machine flap pause/play and echo commands back.
   if (s === 'buffering') return this.state.status === 'play' ? 'play' : 'pause';
   if (s === 'paused') return 'pause';
-  return 'stop'; // idle
+  // idle is the gap between Spotify tracks, not a source stop. Publishing
+  // it as stop is the same end-of-block path that auto-starts the next
+  // queue item — and our stop() then pauses Soloist, so nothing advances.
+  if (s === 'idle') return this.state.status === 'play' ? 'play' : 'stop';
+  return 'stop';
 };
 
 SoloistConnect.prototype.applyItem = function (item) {
