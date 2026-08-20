@@ -1016,9 +1016,14 @@ SoloistConnect.prototype.applyPosition = function (pos) {
   );
   if (!Number.isFinite(positionMs)) return;
   const timestampMs = Number(pos.timestamp_ms);
+  const now = Date.now();
+  let ts = Number.isFinite(timestampMs) ? timestampMs : now;
+  // A timestamp more than 2s off "now" is clock skew or seconds-vs-ms.
+  // currentSeekMs would jump. Treat position_ms as now instead.
+  if (Math.abs(now - ts) > 2000) ts = now;
   this.positionAnchor = {
     position_ms: positionMs,
-    timestamp_ms: Number.isFinite(timestampMs) ? timestampMs : Date.now(),
+    timestamp_ms: ts,
     speed: this.state.status === 'play' ? 1 : 0,
   };
 };
