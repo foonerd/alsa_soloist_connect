@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.4.0.**
+> **Alpha, version 0.5.0.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -49,6 +49,7 @@ It belongs to the account that generated it and must not be shared.
 | Initial volume | 50 | 0 to 100. |
 | Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
 | Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
+| Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
 | Verbose logging | off | Adds verbose logging to the daemon. Useful when reporting a problem. |
 
 The settings page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
@@ -85,6 +86,8 @@ When Volumio has a mixer, hardware or software, that mixer does the attenuation 
 The stream itself stays at full scale, which is what VU meters and other per-source metering need: the needles follow the music rather than the volume knob.
 
 With the mixer set to `None` there is nothing downstream to attenuate, so the volume is applied to the stream instead.
+
+**Output trim** is separate from all of this. It is a fixed offset on the stream itself, applied before the ALSA chain, and it is the right control when this source is simply quieter or louder than everything else on the system. Because the stream normally arrives at full scale, a trim is also what changes how far VU meters swing on Spotify without touching any other source. Around +6 dB is a reasonable starting point if the needles sit at half height.
 
 ---
 

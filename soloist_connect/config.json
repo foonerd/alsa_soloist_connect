@@ -19,6 +19,10 @@
     "type": "number",
     "value": 500
   },
+  "output_trim_db": {
+    "type": "number",
+    "value": 0
+  },
   "retain_api_key": {
     "type": "boolean",
     "value": true

@@ -324,6 +324,16 @@ Two rules that are not obvious:
 
 Both directions use a two-step deadband, and the outbound mirror collapses bursts so a slider drag does not queue one `set_volume` per tick ahead of a skip: Soloist handles commands serially and that queue was seconds of lag.
 
+### Output trim
+
+A fixed offset on the stream, `-12` to `+12` dB, default 0. Distinct from volume: it changes the level entering the chain, not the knob.
+
+It exists because with `APULSE_EXTERNAL_VOLUME` set the shim does no sample scaling at all, so this is the only place a per-source offset can be applied. It is what raises or lowers what per-source meters and the mixer see from Spotify without affecting MPD or anything else.
+
+`output_trim_db` reaches the daemon as `OUTPUT_TRIM_DB`, and `launch-soloist.sh` exports `APULSE_OUTPUT_TRIM_DB` only when it is non-zero. The shim applies it before the ALSA write (fork `858521f`).
+
+The launcher validates with an explicit case list rather than a `[0-9]*` glob. A leading minus does not match that glob, so `-6` would have been silently discarded and the setting would have appeared to work in one direction only.
+
 ---
 
 ## Reporting the quality tier

@@ -142,7 +142,7 @@ mkdir -p "$OUTPUT_DIR"
 APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
 # Exact commit, never a branch: a moving pin makes two builds of the same plugin
 # version produce different shims.
-APULSE_REF="${APULSE_REF:-e5df9a6fb3cf8a96558a4afe65497dd7d07dc8ff}"
+APULSE_REF="${APULSE_REF:-858521fbbf93068080b5fa55dc82e6436167bb7a}"
 
 echo "[+] Source: $APULSE_REPO ($APULSE_REF)"
 echo ""

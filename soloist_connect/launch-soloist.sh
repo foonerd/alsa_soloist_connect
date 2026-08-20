@@ -84,9 +84,23 @@ if [ "${EXTERNAL_VOLUME:-}" = "true" ]; then
 else
   unset APULSE_EXTERNAL_VOLUME
 fi
+# Integer dB only. A generic [0-9]* case treats "-6" as invalid because of
+# the leading minus, so the list is explicit. Missing or 0 leaves the
+# stream unscaled; SoftMaster remains the volume knob.
+TRIM=0
+case "${OUTPUT_TRIM_DB:-}" in
+  -12|-11|-10|-9|-8|-7|-6|-5|-4|-3|-2|-1|1|2|3|4|5|6|7|8|9|10|11|12)
+    TRIM="$OUTPUT_TRIM_DB"
+    ;;
+esac
+if [ "$TRIM" != 0 ]; then
+  export APULSE_OUTPUT_TRIM_DB="$TRIM"
+else
+  unset APULSE_OUTPUT_TRIM_DB
+fi
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
-echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} uname=$(uname -m)" >&2
+echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB uname=$(uname -m)" >&2
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
 # CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.

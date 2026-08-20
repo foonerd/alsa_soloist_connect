@@ -21,6 +21,7 @@
           "initial_volume",
           "cache_size_mb",
           "buffer_ms",
+          "output_trim_db",
           "retain_api_key",
           "verbose_logging"
         ]
@@ -91,6 +92,22 @@
             },
             {
               "max": 2000
+            }
+          ]
+        },
+        {
+          "id": "output_trim_db",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.OUTPUT_TRIM_DB",
+          "doc": "TRANSLATE.OUTPUT_TRIM_DB_DOC",
+          "value": 0,
+          "attributes": [
+            {
+              "min": -12
+            },
+            {
+              "max": 12
             }
           ]
         },

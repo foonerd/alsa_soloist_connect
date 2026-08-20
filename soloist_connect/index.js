@@ -309,6 +309,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
     `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
     `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
+    `OUTPUT_TRIM_DB="${this.config.get('output_trim_db')}"`,
     `EXTERNAL_VOLUME="${this.mixerIsExternal() ? 'true' : 'false'}"`,
     // Read by uninstall.sh, which runs after the plugin config has been
     // rendered unreadable and cannot consult it.
@@ -1345,6 +1346,7 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('initial_volume', self.config.get('initial_volume'));
       set('cache_size_mb', self.config.get('cache_size_mb'));
       set('buffer_ms', self.config.get('buffer_ms'));
+      set('output_trim_db', self.config.get('output_trim_db'));
       set('verbose_logging', self.config.get('verbose_logging') === true);
       defer.resolve(uiconf);
     })
@@ -1376,6 +1378,11 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Output buffer must be between 100 and 2000 ms.' };
   }
 
+  const outputTrimDb = parseInt(data.output_trim_db, 10);
+  if (isNaN(outputTrimDb) || outputTrimDb < -12 || outputTrimDb > 12) {
+    return { ok: false, message: 'Output trim must be an integer between -12 and 12 dB.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -1384,6 +1391,7 @@ SoloistConnect.prototype.validateSettings = function (data) {
       initial_volume: initialVolume,
       cache_size_mb: cacheSize,
       buffer_ms: bufferMs,
+      output_trim_db: outputTrimDb,
       retain_api_key: !!data.retain_api_key,
       verbose_logging: !!data.verbose_logging,
     },
@@ -1405,6 +1413,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('initial_volume', result.values.initial_volume);
   this.config.set('cache_size_mb', result.values.cache_size_mb);
   this.config.set('buffer_ms', result.values.buffer_ms);
+  this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('verbose_logging', result.values.verbose_logging);
 
