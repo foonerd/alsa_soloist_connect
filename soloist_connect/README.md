@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.5.0.**
+> **Alpha, version 0.6.0.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -88,6 +88,18 @@ The stream itself stays at full scale, which is what VU meters and other per-sou
 With the mixer set to `None` there is nothing downstream to attenuate, so the volume is applied to the stream instead.
 
 **Output trim** is separate from all of this. It is a fixed offset on the stream itself, applied before the ALSA chain, and it is the right control when this source is simply quieter or louder than everything else on the system. Because the stream normally arrives at full scale, a trim is also what changes how far VU meters swing on Spotify without touching any other source. Around +6 dB is a reasonable starting point if the needles sit at half height.
+
+### VU meters
+
+If you use the PeppyMeter screensaver, turn its Spotify metering on there and the meters will follow Spotify.
+There is no switch for it in this plugin: the screensaver owns the setting and this plugin follows it, whichever of the two you set up first.
+
+Metering routes the audio through the screensaver's own point in the chain, which is below FusionDSP and Stylish Player, so those are bypassed while it is on. The screensaver already refuses to enable Spotify metering when DSP is in use.
+
+### Do not run the stock Spotify plugin as well
+
+Volumio's own Spotify Connect plugin and this one are two versions of the same thing, and they compete for the same audio path.
+Enable one or the other. The plugin warns you if it finds both running.
 
 ---
 

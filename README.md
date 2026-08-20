@@ -339,6 +339,34 @@ The launcher validates with an explicit case list rather than a `[0-9]*` glob. A
 
 ---
 
+## PeppyMeter integration
+
+PeppyMeter meters per source rather than across the whole chain. Its contribution renders `pcm.spotify` either as a passthrough or as a `multi` that sends the audio to `postpeppyalsa` and a duplicate to a meter, and it decides which from its own setting.
+
+It cannot rewrite this plugin's configuration the way it rewrites `spop`'s YAML, so it calls `setPeppyMetering(bool)` instead. That stores `peppy_metering`, rewrites the env file, and restarts the daemon only when nothing is playing.
+
+`playbackDevice()` resolves the result: `plug:spotify` when metering is on **and** `pcm.spotify` is actually present in `/etc/asound.conf`, otherwise `plug:volumio`. The setting alone is not enough, because that PCM only exists once PeppyMeter has rendered its contribution; without the check a restart would try to open a device that is not there.
+
+The other direction is covered on start. `syncPeppyMeteringFromPeppy()` asks PeppyMeter's `soloistMeteringWanted()` and adopts the answer, so the two plugins agree whichever is enabled second.
+
+### The systemd pin had to go
+
+`PLAYBACK_DEVICE` is written to the env file and read by `launch-soloist.sh`, which treats an existing `APULSE_PLAYBACK_DEVICE` as a deliberate override. Older installs pinned that in the unit:
+
+```
+Environment=APULSE_PLAYBACK_DEVICE=plug:volumio
+```
+
+which wins permanently, so the env file would never be read and metering would appear to do nothing at all. `unpin-playback-device.sh` strips that line and reloads systemd; `onStart` runs it whenever the line is present. `install.sh` no longer writes it, and both sudoers entries are in place.
+
+`peppy_metering` is deliberately absent from `UIConfig.json`. PeppyMeter owns the toggle, and two switches for one behaviour drift apart.
+
+### Running alongside the stock Spotify plugin
+
+`warnIfSpopStarted()` reads `/data/configuration/plugins.json` and toasts a warning when `music_service.spop` is STARTED, on plugin start and when the settings page opens. Both plugins claim the same source and the same metered PCM; running them together is not supported.
+
+---
+
 ## Reporting the quality tier
 
 The now-playing line shows the Spotify quality tier, matching the names in the app's audio quality menu: Low, Normal, High, Very High, Lossless.
@@ -423,7 +451,7 @@ so a skip discarded nothing and the already-committed audio played out. Confirme
 - **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
-- **PeppyMeter needles follow the signal, not the volume knob.** That depends on Volumio owning the attenuation; see [Volume](#volume). Its per-source metering is still hardcoded to the `spop` plugin's paths and config format, so the plugin is not metered as a Spotify source. The screensaver itself does trigger, via its `Other_ON` branch.
+- **PeppyMeter metering.** When the screensaver's Spotify metering is on, the daemon plays through `plug:spotify`, PeppyMeter's metered entry at contribution priority 5, so its VU meters respond to Spotify. Contributions above that point are skipped: FusionDSP at 10 and Stylish Player at 7. PeppyMeter already forces its Spotify toggle off when DSP is on. See [PeppyMeter integration](#peppymeter-integration).
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
 - **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
 - armv6 devices are out of scope.

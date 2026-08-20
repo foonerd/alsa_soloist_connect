@@ -63,7 +63,11 @@ fi
 
 # pcm.volumio includes softvolume. LocalPlayback does not: it aborted
 # in snd1_pcm_hw_param_get_min and left the DAC at full scale.
-export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
+if [ -n "${PLAYBACK_DEVICE:-}" ]; then
+  export APULSE_PLAYBACK_DEVICE="$PLAYBACK_DEVICE"
+else
+  export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
+fi
 # One-shot close. Cork does not free the device; unsetVolatile/stop create
 # this file and apulse closes on it, then unlinks.
 export APULSE_YIELD_PATH="${APULSE_YIELD_PATH:-/data/soloist/alsa.yield}"

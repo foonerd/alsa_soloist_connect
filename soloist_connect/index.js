@@ -162,6 +162,9 @@ SoloistConnect.prototype.onStart = function () {
     this.volumeCallbackRegistered = true;
   }
 
+  this.unpinPlaybackDevice();
+  this.warnIfSpopStarted();
+
   const apiKey = (this.config.get('api_key') || '').trim();
   if (!apiKey) {
     this.commandRouter.pushToastMessage(
@@ -233,6 +236,7 @@ SoloistConnect.prototype.startDaemon = function () {
 
   this.ensureBinaryFresh()
     .then(() => {
+      self.syncPeppyMeteringFromPeppy();
       self.writeEnvFile();
       exec(
         `/usr/bin/sudo /bin/systemctl restart ${SERVICE_UNIT}`,
@@ -314,6 +318,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
     // Read by uninstall.sh, which runs after the plugin config has been
     // rendered unreadable and cannot consult it.
     `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
+    `PLAYBACK_DEVICE="${this.playbackDevice()}"`,
   ];
   if (this.config.get('verbose_logging') === true) {
     lines.push('VERBOSE="true"');
@@ -321,6 +326,77 @@ SoloistConnect.prototype.writeEnvFile = function () {
 
   fs.mkdirSync('/data/soloist', { recursive: true });
   fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
+};
+
+SoloistConnect.prototype.playbackDevice = function () {
+  if (this.config.get('peppy_metering') !== true) return 'plug:volumio';
+  try {
+    const conf = fs.readFileSync('/etc/asound.conf', 'utf8');
+    if (/^\s*pcm\.spotify\s*\{/m.test(conf)) return 'plug:spotify';
+  } catch (e) { /* stay on volumio */ }
+  return 'plug:volumio';
+};
+
+SoloistConnect.prototype.setPeppyMetering = function (enabled) {
+  const want = !!enabled;
+  if (this.config.get('peppy_metering') === want) {
+    this.writeEnvFile();
+    return libQ.resolve();
+  }
+  this.config.set('peppy_metering', want);
+  this.writeEnvFile();
+  if (this.state.status === 'play') return libQ.resolve();
+  if (!this.active && !this.ws) return libQ.resolve();
+  return this.startDaemon().then(() => this.connectWebSocket());
+};
+
+SoloistConnect.prototype.syncPeppyMeteringFromPeppy = function () {
+  let want;
+  try {
+    want = this.commandRouter.executeOnPlugin(
+      'user_interface',
+      'peppy_screensaver',
+      'soloistMeteringWanted'
+    );
+  } catch (e) {
+    return;
+  }
+  if (typeof want === 'boolean' && this.config.get('peppy_metering') !== want) {
+    this.config.set('peppy_metering', want);
+  }
+};
+
+SoloistConnect.prototype.unpinPlaybackDevice = function () {
+  const unit = '/etc/systemd/system/soloist.service';
+  let text;
+  try {
+    text = fs.readFileSync(unit, 'utf8');
+  } catch (e) {
+    return;
+  }
+  if (!/^\s*Environment=APULSE_PLAYBACK_DEVICE=/m.test(text)) return;
+  try {
+    execSync(
+      '/usr/bin/sudo /bin/bash ' + path.join(this.pluginPath(), 'unpin-playback-device.sh'),
+      { timeout: 15000 }
+    );
+  } catch (e) {
+    this.logger.warn('SoloistConnect: cannot unpin unit playback device: ' + e);
+  }
+};
+
+SoloistConnect.prototype.warnIfSpopStarted = function () {
+  try {
+    const plugins = new VConf();
+    plugins.loadFile('/data/configuration/plugins.json');
+    if (plugins.get('music_service.spop.status') === 'STARTED') {
+      this.commandRouter.pushToastMessage(
+        'warning',
+        'Spotify Soloist',
+        'Stock Spotify Connect is also enabled. Use Soloist or Spotify Connect, not both.'
+      );
+    }
+  } catch (e) { /* plugins.json unreadable */ }
 };
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1427,7 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('buffer_ms', self.config.get('buffer_ms'));
       set('output_trim_db', self.config.get('output_trim_db'));
       set('verbose_logging', self.config.get('verbose_logging') === true);
+      self.warnIfSpopStarted();
       defer.resolve(uiconf);
     })
     .fail((e) => defer.reject(new Error('Failed loading UIConfig: ' + e)));

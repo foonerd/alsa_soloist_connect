@@ -60,7 +60,7 @@ mkdir -p /data/soloist/data /data/soloist/cache /data/soloist/bin /data/soloist/
 chown -R volumio:volumio /data/soloist
 
 # ---------------------------------------------------------------------------
-# Static systemd unit. No Pulse. Audio is Soloist -> apulse -> pcm.volumio.
+# Static systemd unit. No Pulse. Device comes from PLAYBACK_DEVICE in the env file.
 # ---------------------------------------------------------------------------
 chmod +x "$PLUGIN_DIR/launch-soloist.sh"
 
@@ -74,8 +74,6 @@ Wants=network-online.target
 Type=simple
 User=volumio
 Group=volumio
-# plug:volumio: format/rate conversion for Pi I2S. No PulseAudio.
-Environment=APULSE_PLAYBACK_DEVICE=plug:volumio
 ExecStart=/data/plugins/music_service/soloist_connect/launch-soloist.sh
 Restart=on-failure
 RestartSec=5
@@ -105,6 +103,8 @@ volumio ALL=(ALL) NOPASSWD: /bin/bash /data/plugins/music_service/soloist_connec
 volumio ALL=(ALL) NOPASSWD: /usr/bin/bash /data/plugins/music_service/soloist_connect/download-soloist.sh
 volumio ALL=(ALL) NOPASSWD: /bin/bash /data/plugins/music_service/soloist_connect/setup-glibc.sh
 volumio ALL=(ALL) NOPASSWD: /usr/bin/bash /data/plugins/music_service/soloist_connect/setup-glibc.sh
+volumio ALL=(ALL) NOPASSWD: /bin/bash /data/plugins/music_service/soloist_connect/unpin-playback-device.sh
+volumio ALL=(ALL) NOPASSWD: /usr/bin/bash /data/plugins/music_service/soloist_connect/unpin-playback-device.sh
 EOF
 chmod 0440 "$SUDOERS_FILE"
 if ! visudo -c -f "$SUDOERS_FILE"; then
@@ -117,7 +117,7 @@ fi
 # ---------------------------------------------------------------------------
 # Download the Soloist binary from the official Spotify CDN
 # ---------------------------------------------------------------------------
-chmod +x "$PLUGIN_DIR/download-soloist.sh" "$PLUGIN_DIR/setup-glibc.sh" "$PLUGIN_DIR/patch-soloist.sh" "$PLUGIN_DIR/detect-arch.sh"
+chmod +x "$PLUGIN_DIR/download-soloist.sh" "$PLUGIN_DIR/setup-glibc.sh" "$PLUGIN_DIR/patch-soloist.sh" "$PLUGIN_DIR/detect-arch.sh" "$PLUGIN_DIR/unpin-playback-device.sh"
 bash "$PLUGIN_DIR/download-soloist.sh"
 
 # Soloist builds require a recent glibc; sideload one if the system's is too old
