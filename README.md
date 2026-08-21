@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.2.**
+> **Alpha, version 0.6.3.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -55,12 +55,11 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping. |
 | `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`, built by the Docker matrix. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
+| `docker/Dockerfile.shim.{amd64,arm64,armhf}` | Bookworm build images. `libasound2-dev` and a toolchain, nothing else. |
 | `docker/run-docker-shim.sh` | Live builder. Compiles `shim/` in a Bookworm container. |
 | `scripts/build-shim.sh` | Runs inside the container. |
 | `build-matrix.sh` | Builds all three architectures. |
 | `THIRD-PARTY-NOTICES.md` | Full attribution for everything this project aggregates. |
-
-Leftover and unused: `docker/run-docker-apulse.sh` and `scripts/build-apulse.sh`. The Bookworm images are still named `Dockerfile.apulse.<arch>`; the live runner reuses them as the toolchain only.
 
 `out/` is build output and is not committed.
 The Soloist binary is never committed and never packaged.
@@ -113,6 +112,8 @@ Rebuild the matrix after committing shim sources so that file names the commit.
 The build fails if `libpulse.so.0` links `libpulse`, glib or pcre.
 Allowed runtime dependencies are the loader, the libc family and `libasound.so.2`.
 The authority for that list is `volumio-os/recipes/base/VolumioBase.conf`, which has `libasound2`.
+
+The build images carry `libasound2-dev` and a toolchain, and nothing else. glib and pcre2 were apulse's dependencies and are deliberately absent, so a reintroduced dependency fails at compile time rather than being caught by the gate afterwards.
 
 ---
 

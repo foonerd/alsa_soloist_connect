@@ -34,8 +34,8 @@ if [[ -z "${PLATFORM_MAP[$ARCH]}" ]]; then
 fi
 
 PLATFORM="${PLATFORM_MAP[$ARCH]}"
-DOCKERFILE="docker/Dockerfile.apulse.$ARCH"
-IMAGE_NAME="soloist-apulse-builder:$ARCH"
+DOCKERFILE="docker/Dockerfile.shim.$ARCH"
+IMAGE_NAME="soloist-shim-builder:$ARCH"
 OUTPUT_DIR="out/$ARCH"
 
 if [ ! -f "$DOCKERFILE" ]; then

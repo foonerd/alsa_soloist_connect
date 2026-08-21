@@ -1,0 +1,25 @@
+FROM debian:bookworm
+
+# Build environment for the Pulse shim.
+#
+# Debian Bookworm arm64, matching Volumio 4's base, so the library links
+# against the same glibc the target has. Built under qemu on an x86 host;
+# the platform is set by docker/run-docker-shim.sh.
+#
+# libasound2-dev is the only library dependency. The shim links libasound,
+# libm, libpthread and libc, and nothing else. glib and pcre2 were needed by
+# apulse, which this replaced, and are deliberately absent so a reintroduced
+# dependency fails the build rather than being linked in silently.
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    pkg-config \
+    libasound2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build

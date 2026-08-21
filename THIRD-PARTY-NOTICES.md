@@ -25,21 +25,6 @@ Soloist looks up. No PulseAudio library code is redistributed. The shipped
 
 ---
 
-## Not used by the shipped payload
-
-The following leftover path built a patched [apulse](https://github.com/i-rinat/apulse)
-and statically linked GLib and PCRE2. `build-matrix.sh` does not invoke it.
-The files remain in the tree and are unused:
-
-- `docker/run-docker-apulse.sh`
-- `scripts/build-apulse.sh`
-
-The Bookworm images are still named `Dockerfile.apulse.<arch>` and
-`soloist-apulse-builder:<arch>`. [`docker/run-docker-shim.sh`](docker/run-docker-shim.sh)
-reuses those images as the toolchain. The live shim does not link glib or pcre.
-
----
-
 ## Not redistributed, downloaded at install time
 
 ### Spotify Soloist
