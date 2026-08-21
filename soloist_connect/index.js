@@ -984,6 +984,12 @@ SoloistConnect.prototype.takeOverPlayback = function () {
     });
 };
 
+SoloistConnect.prototype.logVerbose = function (msg) {
+  if (this.config.get('verbose_logging') === true) {
+    this.logger.info('SoloistConnect: ' + msg);
+  }
+};
+
 SoloistConnect.prototype.handleEvent = function (msg) {
   switch (msg.type) {
     case 'auth_state':
@@ -994,18 +1000,34 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'playback_state':
       this.updateActive(msg);
-      this.setStatus(msg.status);
-      this.applyPosition(msg.position);
-      if (msg.item) this.applyItem(msg.item);
-      // Active with no item and nothing held: a handover that arrived as a
-      // bare state. Ask rather than publish a blank.
-      else if (this.active && !this.state.uri) this.requestStateRefresh();
-      if (typeof msg.volume === 'number') this.applySoloistVolume(msg.volume);
-      this.schedulePushState();
+      {
+        const prevUri = this.state.uri;
+        this.setStatus(msg.status);
+        this.applyPosition(msg.position);
+        if (msg.item) this.applyItem(msg.item);
+        // Active with no item and nothing held: a handover that arrived as a
+        // bare state. Ask rather than publish a blank.
+        else if (this.active && !this.state.uri) this.requestStateRefresh();
+        if (typeof msg.volume === 'number') this.applySoloistVolume(msg.volume);
+        // End of the current track: Soloist repeats that item as buffering
+        // before track_changed. Publishing it is what metavolumio latched.
+        const sameTrackBuffering =
+          msg.status === 'buffering' &&
+          !!msg.item &&
+          (msg.item.uri || '') === prevUri;
+        if (sameTrackBuffering) {
+          this.logVerbose('hold publish: playback_state buffering same uri ' +
+            prevUri);
+        } else {
+          this.schedulePushState();
+        }
+      }
       break;
 
     case 'track_changed':
       if (msg.item) this.applyItem(msg.item);
+      this.logVerbose('track_changed uri=' + (this.state.uri || '') +
+        ' title=' + JSON.stringify(this.state.title || ''));
       this.pushStateNow();
       break;
 
@@ -1014,7 +1036,20 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       // Status-only event. On a source switch back to Soloist, unsetVolatile
       // has already reset this.state, so there is nothing to show.
       if (!this.state.uri) this.requestStateRefresh();
-      this.pushStateNow();
+      // buffering/idle here have no item. On auto-advance they arrive before
+      // track_changed and a push would republish the previous track.
+      else if (msg.status === 'buffering' || msg.status === 'idle') {
+        this.logVerbose('hold publish: playback_changed ' + msg.status +
+          ' uri=' + this.state.uri);
+      } else {
+        this.pushStateNow();
+      }
+      break;
+
+    case 'command_result':
+      if (msg.command === 'skip_next' || msg.command === 'skip_prev') {
+        this.logVerbose(msg.command + ' result');
+      }
       break;
 
     case 'volume_changed':
@@ -1028,14 +1063,20 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'position_sync':
       // Update the anchor only. A full push here used to sit on the
-      // coalesced timer and delay skip UI. The seek timer ticks locally;
-      // a large jump (user seek) still publishes immediately.
+      // coalesced timer and delay skip UI. A mid-track jump is a user seek
+      // and still publishes. A reset to ~0 is the next track arriving; wait
+      // for track_changed rather than pushing the old title at 0:00.
       {
         const before = this.currentSeekMs();
         this.applyPosition(msg.position);
         this.state.seek = this.currentSeekMs();
         if (this.volatileSet && Math.abs(this.state.seek - before) > 2000) {
-          this.publishState(this.stateSnapshot());
+          if (this.state.seek <= 2000) {
+            this.logVerbose('hold publish: position_sync reset to ' +
+              this.state.seek + 'ms uri=' + (this.state.uri || ''));
+          } else {
+            this.publishState(this.stateSnapshot());
+          }
         }
       }
       break;
@@ -1235,6 +1276,12 @@ SoloistConnect.prototype.publishState = function (state) {
     // reference as volatileState, and getState() reads seek from it on every
     // call, so this is the object the UI is looking at until the next publish.
     this.publishedState = state;
+    this.logVerbose(
+      'publish ' + (state.status || '') +
+      ' uri=' + (state.uri || '') +
+      ' title=' + JSON.stringify(state.title || '') +
+      ' artist=' + JSON.stringify(state.artist || '')
+    );
     this.commandRouter.servicePushState(state, this.servicename);
   } finally {
     this.publishing = false;
@@ -1328,8 +1375,9 @@ SoloistConnect.prototype.requestStateRefresh = function () {
 // are position_sync, which publishes solely on a jump over 2000 ms.
 //
 // A skip publishes because track_changed calls pushStateNow after the claim has
-// completed. That is why next/prev shows a full payload and a mid-track
-// handover shows none.
+// completed. Auto-advance used to publish the previous track first: Soloist
+// sends buffering/idle with no new item, then repeats the old URI, then
+// track_changed. Those earlier pushes are held.
 //
 // Empty state is not published: claiming with no item yet would blank the UI.
 // Ask the daemon instead.
@@ -1438,11 +1486,13 @@ SoloistConnect.prototype.resume = function () {
 };
 
 SoloistConnect.prototype.next = function () {
+  this.logVerbose('next fired');
   this.sendCommand({ command: 'skip_next' });
   return libQ.resolve();
 };
 
 SoloistConnect.prototype.previous = function () {
+  this.logVerbose('prev fired');
   this.sendCommand({ command: 'skip_prev' });
   return libQ.resolve();
 };
