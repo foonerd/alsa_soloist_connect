@@ -104,6 +104,19 @@ else
 fi
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
+
+# Crashpad leaves lock files behind when the daemon does not exit cleanly, and
+# the next start cannot take them:
+#
+#   ERROR file_io_posix.cc:153] open /data/soloist/data/crashpad/pending/
+#   <uuid>.lock: File exists (17)
+#
+# Two of those at every start, from a process that no longer exists. We stop
+# the daemon on yield, on plugin stop and on restart, so this is routine rather
+# than a sign of a crash. Clear them; a genuine pending report is a .dmp, which
+# is left alone.
+rm -f /data/soloist/data/crashpad/pending/*.lock 2>/dev/null || true
+
 echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB uname=$(uname -m)" >&2
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
