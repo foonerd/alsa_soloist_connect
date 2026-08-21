@@ -14,6 +14,19 @@ const ENV_FILE = '/data/soloist/soloist.env';
 const CACHE_DIR = '/data/soloist/cache';
 const YIELD_PATH = '/data/soloist/alsa.yield';
 
+// RAM cache ceiling, as a fraction of MemTotal.
+//
+// A tmpfs is not reclaimable: pages sit in memory until the files are deleted,
+// and a full one returns ENOSPC to the daemon rather than being paged out. The
+// boards that most want this mode are the ones least able to give up memory to
+// it, so the ceiling is a share of what the board actually has rather than a
+// fixed number that happens to suit a 1 GB Pi.
+//
+// The daemon's own floor is 100 MB (-z, min 100), so a board that cannot spare
+// 100 MB cannot use RAM mode at all and is kept on disk.
+const RAM_CACHE_MAX_FRACTION = 0.25;
+const RAM_CACHE_MIN_MB = 100;
+
 // Spotify's own quality tiers, from the app's audio quality menu:
 //
 //   Low        24 kbps
@@ -305,17 +318,95 @@ SoloistConnect.prototype.ensureBinaryFresh = function () {
   return defer.promise;
 };
 
+// Largest tmpfs cache this board can carry, in MB, or 0 if RAM mode is not
+// viable here. Read from MemTotal rather than assumed: the same plugin runs on
+// a 512 MB Zero 2 W and a 16 GB x86 box.
+//
+// Returns 0 when MemTotal is unreadable. Refusing RAM mode on a board we
+// cannot measure is the safe direction; guessing a size is not.
+SoloistConnect.prototype.ramCacheCeilingMb = function () {
+  let meminfo;
+  try {
+    meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+  } catch (e) {
+    this.logger.warn('SoloistConnect: cannot read /proc/meminfo: ' + e.message);
+    return 0;
+  }
+  const m = meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m);
+  if (!m) {
+    this.logger.warn('SoloistConnect: no MemTotal line in /proc/meminfo');
+    return 0;
+  }
+
+  const totalMb = Math.floor(parseInt(m[1], 10) / 1024);
+  const ceiling = Math.floor(totalMb * RAM_CACHE_MAX_FRACTION);
+  return ceiling >= RAM_CACHE_MIN_MB ? ceiling : 0;
+};
+
+// The tmpfs size to write to the env file, and the cache size the daemon is
+// given, are the same number in RAM mode. They must not diverge: the daemon
+// fills to -z and has no idea the filesystem underneath is smaller, so a -z
+// larger than the tmpfs means it writes until ENOSPC instead of evicting.
+//
+// Returns 0 in disk mode, or when the board cannot carry a tmpfs cache.
+SoloistConnect.prototype.ramCacheSizeMb = function () {
+  if (this.config.get('cache_location') !== 'ram') return 0;
+
+  const ceiling = this.ramCacheCeilingMb();
+  if (!ceiling) return 0;
+
+  // 0 means "no limit" to the daemon, which cannot be honoured against a fixed
+  // tmpfs. In RAM mode it becomes the ceiling.
+  const requested = parseInt(this.config.get('cache_size_mb'), 10);
+  if (!Number.isFinite(requested) || requested <= 0) return ceiling;
+  return Math.min(requested, ceiling);
+};
+
 // Config values are validated at the boundary by validateSettings() before they
 // reach the store, and v-conf enforces the types declared in config.json. This
 // writer therefore trusts the config and does no revalidation.
 SoloistConnect.prototype.writeEnvFile = function () {
   const esc = (v) => String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
+  // Resolved here, not in the shell: cache-location.sh runs before the daemon
+  // and must be handed a decided number, and the same number is what the
+  // daemon is given as -z so the two cannot disagree.
+  const ramMb = this.ramCacheSizeMb();
+  const cacheSize = ramMb > 0 ? ramMb : this.config.get('cache_size_mb');
+
+  // One line per daemon start, recording what was read and what was decided.
+  //
+  // Not gated behind verbose_logging. A stored cache_location of 'ram' once
+  // produced CACHE_LOCATION="disk" in this file, and nothing in the source
+  // accounts for it: the config store held 'ram', the MemTotal ceiling was
+  // 4000 MB, and every caller runs in-process against the same config object.
+  // Reading the code could not distinguish which of those three inputs was
+  // actually false at the moment of the write, because none of them was
+  // recorded. This records them.
+  this.logger.info(
+    'SoloistConnect: writeEnvFile cache_location=' +
+      JSON.stringify(this.config.get('cache_location')) +
+      ' cache_size_mb=' +
+      JSON.stringify(this.config.get('cache_size_mb')) +
+      ' ceiling=' +
+      this.ramCacheCeilingMb() +
+      ' -> ramMb=' +
+      ramMb +
+      ' CACHE_SIZE=' +
+      cacheSize
+  );
+
   const lines = [
     `API_KEY="${esc(this.config.get('api_key'))}"`,
     `DEVICE_NAME="${esc(this.config.get('device_name'))}"`,
     `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
-    `CACHE_SIZE="${this.config.get('cache_size_mb')}"`,
+    `CACHE_SIZE="${cacheSize}"`,
+    // Read by cache-location.sh from the unit's ExecStartPre. "ram" is written
+    // only when the board can actually carry it; otherwise this stays "disk"
+    // whatever the user selected, and the toast from saveSoloistSettings says
+    // so rather than leaving them with a setting that silently did nothing.
+    `CACHE_LOCATION="${ramMb > 0 ? 'ram' : 'disk'}"`,
+    `CACHE_TMPFS_MB="${ramMb}"`,
     `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
     `OUTPUT_TRIM_DB="${this.config.get('output_trim_db')}"`,
     `EXTERNAL_VOLUME="${this.mixerIsExternal() ? 'true' : 'false'}"`,
@@ -1499,11 +1590,27 @@ SoloistConnect.prototype.getUIConfig = function () {
         if (el) el.value = value;
       };
 
+      // A select is not an input: it needs {value,label}, and the label must
+      // match one of its own options or the dropdown renders blank. Assigning
+      // the bare string did exactly that. Take the label from the option list
+      // i18nJson has already translated, so it cannot drift from the strings
+      // file, and fall back to a known-good option when the stored value is
+      // missing or no longer offered.
+      const setSelect = (id, value, fallback) => {
+        const el = uiconf.sections[0].content.find((c) => c.id === id);
+        if (!el) return;
+        const opts = el.options || [];
+        const match =
+          opts.find((o) => o.value === value) || opts.find((o) => o.value === fallback);
+        if (match) el.value = { value: match.value, label: match.label };
+      };
+
       set('api_key', self.config.get('api_key') || '');
       set('retain_api_key', self.config.get('retain_api_key') === true);
       set('device_name', self.config.get('device_name') || 'Volumio');
       set('initial_volume', self.config.get('initial_volume'));
       set('cache_size_mb', self.config.get('cache_size_mb'));
+      setSelect('cache_location', self.config.get('cache_location'), 'disk');
       set('buffer_ms', self.config.get('buffer_ms'));
       set('output_trim_db', self.config.get('output_trim_db'));
       set('verbose_logging', self.config.get('verbose_logging') === true);
@@ -1544,6 +1651,22 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Output trim must be an integer between -12 and 12 dB.' };
   }
 
+  // A UI select hands back either the bare value or {value,label}, depending on
+  // how the field was rendered and whether it was touched. Take both.
+  //
+  // An absent or empty value keeps whatever is stored rather than failing the
+  // save: a field the user never touched must not block the eight fields they
+  // did. A present but unrecognised value is still an error.
+  const rawLocation = data.cache_location;
+  let cacheLocation =
+    rawLocation && typeof rawLocation === 'object' ? rawLocation.value : rawLocation;
+  if (cacheLocation === undefined || cacheLocation === null || cacheLocation === '') {
+    cacheLocation = this.config.get('cache_location') || 'disk';
+  }
+  if (cacheLocation !== 'disk' && cacheLocation !== 'ram') {
+    return { ok: false, message: 'Cache location must be Disk or RAM.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -1551,6 +1674,7 @@ SoloistConnect.prototype.validateSettings = function (data) {
       device_name: (data.device_name || '').trim() || 'Volumio',
       initial_volume: initialVolume,
       cache_size_mb: cacheSize,
+      cache_location: cacheLocation,
       buffer_ms: bufferMs,
       output_trim_db: outputTrimDb,
       retain_api_key: !!data.retain_api_key,
@@ -1573,10 +1697,32 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('device_name', result.values.device_name);
   this.config.set('initial_volume', result.values.initial_volume);
   this.config.set('cache_size_mb', result.values.cache_size_mb);
+  this.config.set('cache_location', result.values.cache_location);
   this.config.set('buffer_ms', result.values.buffer_ms);
   this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('verbose_logging', result.values.verbose_logging);
+
+  // Say what was actually applied. The requested size is clamped against
+  // MemTotal in RAM mode, and RAM mode is refused outright on a board too small
+  // to carry the daemon's own 100 MB floor. Either would otherwise be a setting
+  // that appears to have been accepted and did something different.
+  if (result.values.cache_location === 'ram') {
+    const ramMb = this.ramCacheSizeMb();
+    if (!ramMb) {
+      this.commandRouter.pushToastMessage(
+        'warning',
+        'Spotify Soloist',
+        'This board does not have enough memory for a RAM cache. Staying on disk.'
+      );
+    } else if (ramMb < result.values.cache_size_mb) {
+      this.commandRouter.pushToastMessage(
+        'info',
+        'Spotify Soloist',
+        'RAM cache limited to ' + ramMb + ' MB on this board.'
+      );
+    }
+  }
 
   this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');
   return this.startDaemon()
