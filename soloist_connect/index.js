@@ -323,10 +323,6 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
     `PLAYBACK_DEVICE="${this.playbackDevice()}"`,
   ];
-  if (this.config.get('verbose_logging') === true) {
-    lines.push('VERBOSE="true"');
-  }
-
   fs.mkdirSync('/data/soloist', { recursive: true });
   fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
 };
@@ -432,6 +428,17 @@ SoloistConnect.prototype.connectWebSocket = function () {
       msg = JSON.parse(raw);
     } catch (e) {
       return;
+    }
+    // Verbose logging is every event Soloist sends us, which is what
+    // `soloist ctl trace` prints. We already hold that WebSocket, so there is
+    // nothing to spawn or supervise: trace would open a second client to the
+    // same endpoint to see the same messages.
+    //
+    // The setting used to add --verbose to the daemon. There is no such flag;
+    // the binary answers "unrecognized option '--verbose'" and carries on, so
+    // the toggle produced nothing at all.
+    if (self.config.get('verbose_logging') === true) {
+      self.logger.info('SoloistConnect: ws event ' + raw.toString());
     }
     self.handleEvent(msg);
   });

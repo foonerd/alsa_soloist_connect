@@ -117,7 +117,11 @@ ARGS=(
   --initial-volume "$INITIAL_VOLUME"
   --cache-size "$CACHE_SIZE"
 )
-[ "$VERBOSE" = "true" ] && ARGS+=(--verbose)
+# No --verbose here. Soloist has no such option: it prints
+# "unrecognized option '--verbose'" and carries on, so the setting produced
+# nothing. Verbose logging is now every WebSocket event, logged by the plugin
+# from the connection it already holds, which is what `soloist ctl trace`
+# would show.
 
 if [ -d "$SYSROOT" ]; then
   INTERP=$("$PATCHELF" --print-interpreter "$BIN" 2>/dev/null || true)

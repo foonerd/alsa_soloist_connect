@@ -50,7 +50,7 @@ It belongs to the account that generated it and must not be shared.
 | Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
 | Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
 | Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
-| Verbose logging | off | Adds verbose logging to the daemon. Useful when reporting a problem. |
+| Verbose logging | off | Logs every event Spotify sends the device to the Volumio log. Useful when reporting a problem; leave it off otherwise. |
 
 The settings page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
 
