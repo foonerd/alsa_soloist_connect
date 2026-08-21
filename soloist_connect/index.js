@@ -414,6 +414,15 @@ SoloistConnect.prototype.writeEnvFile = function () {
     // rendered unreadable and cannot consult it.
     `RETAIN_API_KEY="${this.config.get('retain_api_key') === true ? 'true' : 'false'}"`,
     `PLAYBACK_DEVICE="${this.playbackDevice()}"`,
+    // Read by launch-soloist.sh, which turns it into APULSE_DIAG.
+    //
+    // Every diagnostic in the apulse shim is gated behind that variable and
+    // diag_on() returns early when it is unset, so the shim's handling of an
+    // ALSA fault is invisible in the shipped build. When volumioswitch reports
+    // that it cannot write to its target, the journal shows the symptom and
+    // nothing on either side of it: whether apulse recovered, or reopened the
+    // device, or gave up, is not recorded. Setting it changes no behaviour.
+    `VERBOSE_LOGGING="${this.config.get('verbose_logging') === true ? 'true' : 'false'}"`,
   ];
   fs.mkdirSync('/data/soloist', { recursive: true });
   fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });

@@ -105,6 +105,31 @@ fi
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
 
+# Verbose Logging in the plugin settings. Turns on the diagnostics in our
+# apulse fork, which are otherwise dead code: diag_on() reads APULSE_DIAG once
+# and every diag function returns early when it is unset, so setting this
+# changes no behaviour, only what is written to stderr.
+#
+# It has to be set here rather than exported by the caller, for the same reason
+# as APULSE_DIR_OVERRIDE above: this script unsets and rebuilds the environment
+# before the exec line, so anything inherited is discarded in between.
+#
+# What it makes visible, none of which reaches the journal without it:
+#
+#   pcm unrecovered (N), reopening   the shim gave up on recover/prepare and
+#                                    is closing and reopening the device
+#   writei failed (N), reopening     a write failed outside the avail path
+#   1s wake=.. wr=.. xrun=..         per-second write-loop counters
+#   connect / release / reacquire    device lifecycle and negotiated params
+#
+# Without those, an ALSA fault shows only as the SNDERR line emitted by
+# volumioswitch itself, with no record of what the shim did about it.
+if [ "${VERBOSE_LOGGING:-}" = "true" ]; then
+  export APULSE_DIAG=1
+else
+  unset APULSE_DIAG
+fi
+
 # Crashpad leaves lock files behind when the daemon does not exit cleanly, and
 # the next start cannot take them:
 #
@@ -117,7 +142,7 @@ unset PIPEWIRE_RUNTIME_DIR
 # is left alone.
 rm -f /data/soloist/data/crashpad/pending/*.lock 2>/dev/null || true
 
-echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB uname=$(uname -m)" >&2
+echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB diag=${APULSE_DIAG:-off} uname=$(uname -m)" >&2
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
 # CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.

@@ -17,7 +17,7 @@
   "CACHE_LOCATION_DISK": "Disk (default)",
   "CACHE_LOCATION_RAM": "RAM (cleared on restart)",
   "VERBOSE": "Verbose Logging",
-  "VERBOSE_DOC": "Enable verbose Soloist logs (journalctl -u soloist).",
+  "VERBOSE_DOC": "Log every Soloist WebSocket event, and turn on the diagnostics in the audio shim: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Read with 'journalctl -u soloist -u volumio'. Changes no playback behaviour, but is noisy. Leave off unless investigating a problem.",
   "BUFFER_MS": "Output Buffer (ms)",
   "BUFFER_MS_DOC": "How much audio is buffered ahead of the DAC (100-2000). Volumio's ALSA chain applies this value twice, so lower values make skip, seek and pause respond faster. Too low risks dropouts on a busy device. Default 500.",
   "OUTPUT_TRIM_DB": "Output Trim (dB)",
