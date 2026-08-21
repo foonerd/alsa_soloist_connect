@@ -1455,9 +1455,10 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Cache size must be 0 (no limit) or at least 100 MB.' };
   }
 
-  // Bounded because minreq, and therefore the ALSA period, is derived as
-  // tlength/4. Below 100ms the period drops under 25ms and xruns become likely
-  // on a loaded device; 2000ms restores upstream apulse behaviour.
+  // Pulse tlength, the software target Soloist paces against. The ALSA
+  // period is chosen independently in the shim. Below 100ms the software
+  // buffer is too small for a loaded device; 2000ms is the uncapped
+  // upstream default.
   const bufferMs = parseInt(data.buffer_ms, 10);
   if (isNaN(bufferMs) || bufferMs < 100 || bufferMs > 2000) {
     return { ok: false, message: 'Output buffer must be between 100 and 2000 ms.' };

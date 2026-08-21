@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the Docker build matrix that produces the native shim the plugin carries.
 
-> **Alpha, version 0.3.0.**
+> **Alpha, version 0.6.1.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -146,6 +146,18 @@ Override for testing:
 APULSE_REF=<sha> ./docker/run-docker-apulse.sh amd64
 ```
 
+### ALSA format and period
+
+The shim negotiates both rather than accepting whatever falls out of the Pulse parameters.
+
+For playback it picks the first of `S24_3LE`, `S24_LE`, `S16_LE` that the device actually accepts, tested with `snd_pcm_hw_params_test_format`, and converts in the shim. Soloist decodes everything to `FLOAT_LE`, and Volumio's chain converts to `S24_3LE` at `pcm.softvolume` regardless, so doing it here removes a conversion from the `plug` layer instead of adding one.
+
+The period comes from a tested candidate list, `4096, 2048, 1024, 8192`, and the buffer is a whole multiple of it, at least four periods. Deriving the period from Pulse's `minreq` produced 883 frames, which no candidate list would have chosen and which is where the lossless hunting came from.
+
+The fallback probe runs on a copy of the params, not the live set: Debian's libasound asserts if a failed `set_period_size_first` empties it.
+
+`snd_pcm_open` runs under a quiet error handler. `EBUSY` is another source still holding `plug:volumio` during a handover, and `volumioswitch` prints its own failure on that path; neither is a device fault and neither belongs in the journal as one.
+
 ### The ldd gate
 
 The build fails if the resulting libraries link anything that is not on a stock Volumio 4 image.
@@ -197,7 +209,7 @@ Notable points:
 
 - `libatomic1` and `patchelf` are installed if missing.
 - Bookworm's glibc is 2.36 and Soloist needs 2.38 or newer. A private sysroot is sideloaded into `/data/soloist/sysroot` and the binary is ELF-patched against it. The system glibc is left alone. Launching through an explicit `ld-linux` instead of patching breaks Soloist's subprocesses.
-- The unit sets `APULSE_PLAYBACK_DEVICE=plug:volumio`. The launcher additionally exports `APULSE_MAX_TLENGTH_MS` from the plugin's Output Buffer setting.
+- The launcher exports the ALSA device as `APULSE_PLAYBACK_DEVICE`, derived from `PLAYBACK_DEVICE` in the env file. The unit deliberately does **not** pin it: the launcher treats an existing value as an override, so a pinned unit would win permanently and PeppyMeter metering would silently do nothing. `unpin-playback-device.sh` removes the line from older installs. The launcher also exports `APULSE_MAX_TLENGTH_MS`, `APULSE_YIELD_PATH`, `APULSE_EXTERNAL_VOLUME` and, when non-zero, `APULSE_OUTPUT_TRIM_DB`.
 - Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; the plugin re-downloads on the next start.
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
@@ -415,11 +427,23 @@ The hardware buffer read 65536 frames in every case, so the extra time is the sw
 
 Moving the output device down the chain would recover the time and is the wrong fix: every faster path bypasses the contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is the whole reason for entering at `pcm.volumio`. The cap is applied in apulse instead, where it shrinks both stages together because the switch sizes its target from what the client asks for.
 
-At 500 ms the hardware reports `buffer_size` 22050 frames with `period_size` 882, against 65536 and 512 at the default.
+At 500 ms the Pulse target is 22050 frames. The ALSA period is no longer derived from that.
 
 The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency, and the fork caps the Pulse figure rather than the `/proc/asound` `delay` line.
 
-`minreq`, and therefore the ALSA period, is `tlength/4`. That sets the useful floor: at 100 ms the period is 25 ms, which is about as low as a loaded Pi tolerates.
+Pulse `minreq` stays the client's write quantum, typically 20 ms. It is not the ALSA period. The useful floor on the Output Buffer setting is about the software target, not the device IRQ size.
+
+### Device format and period are not the Pulse spec
+
+The ring and `writable_size` work below paced Soloist as a client. It did not change what we asked ALSA for. Two things were still coupled that a real Pulse server keeps separate, and testers changing the Output Buffer slider could not uncouple them.
+
+**The ALSA period was `minreq / frame_size`.** Soloist's default `minreq` is 20 ms, and the clamp only shrinks it when it exceeds `tlength/4`. So the device stayed at ~882 frames no matter what the slider said. That is why cache, buffer and trim changes did not move lossless stutter on a Pi 3.
+
+**FLOAT32 was opened on `plug:volumio`.** `pcm.softvolume` already forces `S24_3LE`, so the float never reached the DAC; `plug` converted every short write through volumioswitch and softvol. On a Pi 3 + HiFiBerry that is the lossless-only cracking, with nothing in the Soloist log.
+
+**`set_period_size_near(minreq)` then `set_buffer_size_near(tlength)`** can empty an interval on a HAT or ioplug with discrete sizes. Debian `libasound` asserts (`pcm_params.c:170`) and the daemon ABRTs.
+
+The shim now does what Pulse/PipeWire do. The client keeps its sample spec and `tlength`/`minreq`. Playback converts to `S24_3LE` (then `S24_LE`, then `S16_LE`) before `snd_pcm_writei`. The period is chosen from `{4096, 2048, 1024, 8192}` after `snd_pcm_hw_params_test_period_size` — 4096 frames is ~93 ms at 44.1 kHz, and 4×4096 is Peppyalsa's 16384. The buffer is an integer number of those periods, tested before set. The io callback writes one period, not 16 KB (46 ms of FLOAT32 against 93 ms of S16).
 
 ### Supply rate, and why lossless was the only quality that hunted
 
