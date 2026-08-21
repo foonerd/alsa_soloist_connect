@@ -73,6 +73,7 @@ function SoloistConnect(context) {
   this.qualityPath = '';   // cache file that track was reading from
   this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
   this.takeoverInFlight = false;
+  this.lastStateRefreshAt = 0; // throttle for unsolicited get_state requests
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +897,9 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       this.setStatus(msg.status);
       this.applyPosition(msg.position);
       if (msg.item) this.applyItem(msg.item);
+      // Active with no item and nothing held: a handover that arrived as a
+      // bare state. Ask rather than publish a blank.
+      else if (this.active && !this.state.uri) this.requestStateRefresh();
       if (typeof msg.volume === 'number') this.applySoloistVolume(msg.volume);
       this.schedulePushState();
       break;
@@ -907,6 +911,9 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'playback_changed':
       this.setStatus(msg.status);
+      // Status-only event. On a source switch back to Soloist, unsetVolatile
+      // has already reset this.state, so there is nothing to show.
+      if (!this.state.uri) this.requestStateRefresh();
       this.pushStateNow();
       break;
 
@@ -1197,6 +1204,43 @@ SoloistConnect.prototype.pushState = function () {
   this.publishState(this.stateSnapshot());
 };
 
+// Ask the daemon what is playing. playback_state is the answer and carries the
+// decorated item, so a claim that landed with no metadata repairs itself on the
+// next event instead of waiting for the user to skip.
+//
+// Throttled: a daemon that answers get_state without an item would otherwise be
+// asked again by its own reply, indefinitely.
+SoloistConnect.prototype.requestStateRefresh = function () {
+  const now = Date.now();
+  if (now - this.lastStateRefreshAt < 3000) return;
+  this.lastStateRefreshAt = now;
+  this.sendCommand({ command: 'get_state' });
+};
+
+// Publish once on the volatile claim edge.
+//
+// pushState() returns early while volatileSet is false, and the claim is
+// asynchronous: playback_state runs takeOverPlayback (volumioStop, then a poll
+// until the device is free) while its own schedulePushState fires on the very
+// next turn of the event loop. Metadata already written by applyItem is
+// therefore dropped by that push, and nothing publishes afterwards, because
+// setVolatile did not push and the only remaining events on a mid-track resume
+// are position_sync, which publishes solely on a jump over 2000 ms.
+//
+// A skip publishes because track_changed calls pushStateNow after the claim has
+// completed. That is why next/prev shows a full payload and a mid-track
+// handover shows none.
+//
+// Empty state is not published: claiming with no item yet would blank the UI.
+// Ask the daemon instead.
+SoloistConnect.prototype.publishOnClaim = function () {
+  if (!this.state.uri) {
+    this.requestStateRefresh();
+    return;
+  }
+  this.schedulePushState();
+};
+
 SoloistConnect.prototype.setVolatile = function () {
   if (this.volatileSet) return;
   this.volatileSet = true;
@@ -1216,6 +1260,7 @@ SoloistConnect.prototype.setVolatile = function () {
     this.ignoreStopEvent = false;
   }, 2000);
   this.flushPendingMixerVolume();
+  this.publishOnClaim();
 };
 
 SoloistConnect.prototype.unsetVolatile = function () {
