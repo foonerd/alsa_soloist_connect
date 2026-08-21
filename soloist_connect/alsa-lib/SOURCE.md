@@ -1,8 +1,12 @@
-# apulse Pulse-to-ALSA shim
+# Pulse shim 0.2.0 (Soloist → ALSA)
 
-Pre-built shared objects per architecture. Soloist only speaks PipeWire or
-PulseAudio. These libraries implement that client API on ALSA, so the
-daemon can play into `pcm.volumio` on Volumio 4 (no Pulse daemon).
+Purpose-driven `libpulse.so.0`. Soloist dlopens this name. The library
+implements the 47 `pa_*` symbols that binary looks up (see `shim/ABI.txt`)
+and writes FLOAT32 into `plug:volumio`. It is not apulse and not a Pulse
+server.
+
+Library version is **0.2.0** (`shim/CMakeLists.txt`). There is no tag pin:
+the source is `shim/` in this repository.
 
 ## Layout
 
@@ -10,28 +14,16 @@ daemon can play into `pcm.volumio` on Volumio 4 (no Pulse daemon).
 - **arm64/** — aarch64 (64-bit Pi)
 - **armhf/** — armv7l (32-bit Pi)
 
-Each directory contains exactly these files, and nothing else:
+Each directory contains:
 
 - `libpulse.so.0`
-- `libpulse-simple.so.0`
-- `libpulse-mainloop-glib.so.0`
 - `SOURCE_REVISION`
 
-That list is the payload manifest. It is declared once, in
-`docker/run-docker-apulse.sh` as `PAYLOAD_FILES`, and drives the copy, the
-byte-for-byte verification and the removal of anything undeclared. Keep this
-section and that array in agreement.
+That list is the payload manifest in `docker/run-docker-shim.sh`.
+`libpulse-simple.so.0` and `libpulse-mainloop-glib.so.0` are not shipped:
+Soloist does not load them.
 
-Upstream also builds an `apulse` launcher script. It is deliberately not shipped:
-it hardcodes `/usr/local/lib/apulse`, which does not exist on Volumio, and
-`launch-soloist.sh` sets `LD_LIBRARY_PATH` itself.
-
-`install.sh` and `launch-soloist.sh` pick the directory from `detect-arch.sh`
-(userspace arch, not kernel `uname -m`).
-
-## How they are built
-
-From the `alsa_soloist_connect` folder, on a machine with Docker:
+## Build
 
 ```
 ./build-matrix.sh
@@ -40,69 +32,10 @@ From the `alsa_soloist_connect` folder, on a machine with Docker:
 Single arch:
 
 ```
-./docker/run-docker-apulse.sh amd64
+./docker/run-docker-shim.sh amd64
 ```
 
-The build installs its own output into `soloist_connect/alsa-lib/<arch>/` and
-verifies it byte-for-byte. There is no manual copy step: when there was one, a
-stale shim shipped while the build log looked correct, and several rounds of
-measurement were invalidated before anyone noticed. `out/<arch>/` is emptied at
-the start of every build for the same reason.
-
-The container is Debian Bookworm (Volumio 4's base). glib is statically
-linked because `libglib2.0` is not in `VolumioBase.conf`. The build fails
-if `ldd` shows anything other than `libasound` and the base libc family.
-
-## Source
-
-[foonerd/apulse](https://github.com/foonerd/apulse) at
-`47d9f125c40c89b154811246d8b62f87c95be737`.
-
-That is a fork of [i-rinat/apulse](https://github.com/i-rinat/apulse) at
-`5d654cecd18474b4e0d885e774bc41fcbbc9818b`, with the Volumio changes as commits
-on `master`. Upstream is unchanged and still reachable:
-
-```
-git log --oneline 5d654ce..47d9f12
-```
-
-shows exactly what was added, and each commit carries its evidence in its
-message: the device captures, the disassembly, the arithmetic.
-
-These were a patch series until the stack reached eight files. Every
-consolidation shifted the next patch's line numbers, and a hand-edited hunk
-header twice cost a build by silently dropping the hunks after it. Git maintains
-the arithmetic now.
-
-Four of the eight are upstream defects rather than Volumio policy: a
-use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush`
-that discarded nothing alongside an io callback that spun on a level-triggered
-`POLLOUT`, and a `read_index` that collapsed to zero whenever the clock stopped.
-`git format-patch 5d654ce..HEAD` produces those for submission.
-
-The repository and commit are pinned in `docker/run-docker-apulse.sh`, and only
-there. `scripts/build-apulse.sh` has no fallback and aborts if either is unset.
-They were duplicated once, as fallbacks in the build script; only one copy was
-updated, the runner's value won, and a build produced stock upstream while every
-gate passed, because each of those compares the build to itself.
-
-The build refuses to proceed if the checked-out tree has no commits on top of
-`5d654ce`, which is what caught that.
-
-The revision that produced each shipped payload is recorded in
-`SOURCE_REVISION` beside the libraries. It must match `APULSE_REF`, and the two
-move in the same commit: `install.sh` copies `alsa-lib/<arch>` as it stands, so
-a commit that changed one alone would leave the tree naming one shim and
-shipping another.
-
-Override for testing:
-
-```
-APULSE_REF=<sha> ./docker/run-docker-apulse.sh amd64
-APULSE_REPO=https://github.com/i-rinat/apulse.git APULSE_REF=5d654ce ./docker/run-docker-apulse.sh amd64
-```
-
-The second builds stock upstream, which the commit check rejects. That is
-intentional.
-
-License: MIT (apulse). The fork adds no different terms.
+The container is Debian Bookworm. Runtime link is `libasound` and libc only.
+`SOURCE_REVISION` is the git HEAD of this repository that produced the `.so`.
+Rebuild the matrix after committing shim sources so that file names the
+commit, not an earlier HEAD.

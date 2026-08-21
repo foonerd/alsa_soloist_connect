@@ -60,11 +60,11 @@ The settings page also has an **update** button, which fetches a fresh Soloist b
 ## How the audio path works
 
 ```
-Spotify app  ->  soloist daemon  ->  apulse  ->  pcm.volumio  ->  AAMPP / DSP  ->  DAC
+Spotify app  ->  soloist daemon  ->  Pulse shim  ->  pcm.volumio  ->  AAMPP / DSP  ->  DAC
 ```
 
 Soloist has no ALSA backend of its own; it speaks PipeWire or PulseAudio.
-The plugin ships a private copy of **apulse**, which implements the PulseAudio client API on top of ALSA, and points Soloist at it.
+The plugin ships a private Pulse shim (`libpulse.so.0`) that implements the PulseAudio client calls Soloist uses, and points Soloist at it.
 No PulseAudio daemon is installed, and nothing else on the system is changed.
 
 Sample rate and quality shown in the Volumio UI are worked out on the device.
@@ -175,7 +175,7 @@ Common cases:
 - **Nothing plays and the log shows exit code 10.** The Soloist build expired. Press the update button in the plugin settings.
 - **The device does not appear in the Spotify app.** Check that the API key was saved, that the daemon is running, and that the device and phone are on the same network segment.
 - **Another source will not start while Spotify is connected.** Should not happen from 0.4.0 onwards. If it does, `journalctl -u volumio -f | grep -i soloist` around the moment you switch will show whether the device was released.
-- **Install failed with "apulse shim missing".** The package was built without the libraries for this architecture. Report it, including the architecture reported by `dpkg --print-architecture`.
+- **Install failed with "Pulse shim ... is not in the plugin package".** The package was built without the libraries for this architecture. Report it, including the architecture reported by `dpkg --print-architecture`.
 
 When reporting a problem, **never post your API key, unredacted logs, crash reports or the contents of `/data/soloist`.**
 Redact before sharing.
@@ -185,10 +185,7 @@ Redact before sharing.
 ## Licence and attribution
 
 This plugin is MIT licensed. See [LICENSE](LICENSE).
-
-It includes **apulse** by Rinat Ibragimov, MIT licensed.
-The licence text ships alongside the libraries in [`alsa-lib/LICENSE.apulse`](alsa-lib/LICENSE.apulse).
-Those libraries statically link GLib and PCRE2, which are LGPL-2.1-or-later and BSD-3-Clause respectively; the full notice and the means to rebuild and relink them are published in the project repository.
+The Pulse shim that plays through `pcm.volumio` is this project's own code, shipped as `alsa-lib/<arch>/libpulse.so.0`.
 
 Using Spotify Soloist means accepting the [Spotify Terms and Conditions of Use](https://www.spotify.com/legal/end-user-agreement/).
 Soloist is proprietary Spotify software and is downloaded from Spotify, not supplied by this plugin.

@@ -5,7 +5,7 @@ Build system and source for the **Spotify Soloist Connect** plugin for Volumio 4
 The plugin turns a Raspberry Pi or x86 Volumio 4 device into a Spotify Connect endpoint using [Spotify Soloist](https://developer.spotify.com/documentation/soloist), with audio leaving through `pcm.volumio`.
 There is no PulseAudio daemon and no PipeWire on the device.
 
-This repository holds two things: the plugin that ships to the Volumio plugin store, and the Docker build matrix that produces the native shim the plugin carries.
+This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
 > **Alpha, version 0.6.2.**
 > Under active development, not ready for user testing.
@@ -24,19 +24,19 @@ This document is for people building or modifying the plugin.
 
 Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAudio. Volumio 4 has neither.
 
-The plugin therefore ships a private copy of [apulse](https://github.com/i-rinat/apulse), a PulseAudio client API implementation that talks to ALSA directly, and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
-apulse opens `pcm.volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply.
+The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
+The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply.
 
-The copy is modified. It is built from [foonerd/apulse](https://github.com/foonerd/apulse), upstream at `5d654ce` with the Volumio changes as commits on `master`. See [Source](#the-apulse-fork).
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.0**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
-    A["Spotify app"] -->|"Spotify Connect"| B["soloist daemon"]
-    B -->|"libpulse.so.0 API"| C["apulse shim (patched)"]
-    C -->|"ALSA"| D["pcm.volumio"]
-    D --> E["volumioswitch"]
-    E --> F["AAMPP chain: softvol, DSP"]
-    F --> G["DAC"]
+    SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.0"]
+    Shim -->|"FLOAT32 writei"| Plug["plug:volumio"]
+    Plug --> Switch["volumioswitch"]
+    Switch --> Soft["softvolume S24_3LE"]
+    Soft --> Dac["DAC"]
 ```
 
 Nothing else on the system is touched.
@@ -48,44 +48,44 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
+| `shim/` | Pulse shim 0.2.0 source. See [`shim/README.md`](shim/README.md). |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
 | `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping. |
-| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | apulse payload, built and installed by the Docker matrix. |
-| `soloist_connect/alsa-lib/LICENSE.apulse` | apulse licence, travels with the binaries it covers. |
+| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`, built by the Docker matrix. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
-| `docker/` | One Bookworm Dockerfile per architecture, plus the runner. |
-| `scripts/build-apulse.sh` | Runs inside the container. |
+| `docker/run-docker-shim.sh` | Live builder. Compiles `shim/` in a Bookworm container. |
+| `scripts/build-shim.sh` | Runs inside the container. |
 | `build-matrix.sh` | Builds all three architectures. |
 | `THIRD-PARTY-NOTICES.md` | Full attribution for everything this project aggregates. |
+
+Leftover and unused: `docker/run-docker-apulse.sh` and `scripts/build-apulse.sh`. The Bookworm images are still named `Dockerfile.apulse.<arch>`; the live runner reuses them as the toolchain only.
 
 `out/` is build output and is not committed.
 The Soloist binary is never committed and never packaged.
 
 ---
 
-## Building the apulse shim
+## Building the Pulse shim
 
 The plugin package must contain `alsa-lib/<arch>/libpulse.so.0` for the target architecture.
-Those libraries are built in Docker on a host with `qemu-user-static` for the ARM targets.
+Those libraries are built from `shim/` in Docker on a host with `qemu-user-static` for the ARM targets.
 
 ```mermaid
 flowchart LR
-    A["build-matrix.sh"] --> B["run-docker-apulse.sh amd64"]
-    A --> C["run-docker-apulse.sh arm64"]
-    A --> D["run-docker-apulse.sh armhf"]
-    B --> E["Bookworm container"]
-    C --> E
-    D --> E
-    E --> F["scripts/build-apulse.sh"]
-    F --> G["clone foonerd/apulse at pinned commit"]
-    G --> H["verify remote, checkout, HEAD, local commits"]
-    H --> I["cmake with static glib and pcre2"]
-    I --> J["ldd gate"]
-    J --> K["out/ARCH/"]
-    K --> L["install into soloist_connect/alsa-lib/ARCH/"]
-    L --> M["verify byte-for-byte"]
+    Matrix["build-matrix.sh"] --> Amd64["run-docker-shim.sh amd64"]
+    Matrix --> Arm64["run-docker-shim.sh arm64"]
+    Matrix --> Armhf["run-docker-shim.sh armhf"]
+    Amd64 --> Bookworm["Bookworm container"]
+    Arm64 --> Bookworm
+    Armhf --> Bookworm
+    Bookworm --> Build["scripts/build-shim.sh"]
+    Build --> Cmake["cmake shim/"]
+    Cmake --> Gate["ldd gate: libasound and libc only"]
+    Gate --> Out["out/ARCH/"]
+    Out --> Install["soloist_connect/alsa-lib/ARCH/"]
+    Install --> Verify["byte-for-byte verify"]
 ```
 
 All three architectures:
@@ -98,80 +98,49 @@ cd alsa_soloist_connect
 One architecture:
 
 ```
-./docker/run-docker-apulse.sh amd64 --verbose
+./docker/run-docker-shim.sh amd64 --verbose
 ```
 
 The build installs its output into `soloist_connect/alsa-lib/<arch>/` and compares every file byte-for-byte afterwards.
 A mismatch or a missing file fails the build.
-There is no manual copy step, deliberately: when there was one, a stale shim shipped while the build log looked correct, and three rounds of measurement were invalidated before anyone noticed.
+There is no manual copy step, deliberately: when there was one, a stale shim shipped while the build log looked correct.
 
-Override the source revision when testing:
-
-```
-APULSE_REF=master ./docker/run-docker-apulse.sh amd64
-```
-
-### The apulse fork
-
-The shim is built from [foonerd/apulse](https://github.com/foonerd/apulse), pinned to an exact commit. That is upstream [i-rinat/apulse](https://github.com/i-rinat/apulse) at `5d654ce` with the Volumio changes as commits on `master`:
-
-```
-git log --oneline 5d654ce..HEAD
-```
-
-Each commit carries its evidence in its message: the device captures, the disassembly, the arithmetic that justified it.
-
-This was a patch series until the stack reached eight files. Every consolidation shifted the next patch's line numbers, and a hand-edited hunk header twice cost a build by silently dropping every hunk after it. Git maintains the arithmetic now, and a change is a commit rather than a diff to be transcribed.
-
-Four of the commits are upstream defects rather than Volumio policy, and are worth submitting rather than carrying: a use-after-free on context teardown, a narrowing `g_memdup`, a `pa_stream_flush` that discarded nothing alongside an io callback that spun on a level-triggered `POLLOUT`, and a ring buffer sized in bytes rather than in time. `git format-patch 5d654ce..HEAD` produces them.
-
-The device-ownership commits are Volumio policy and belong here rather than upstream. `pa_stream_cork` originally set a paused flag and kept the ALSA device open, writing silence into it, which is reasonable for a desktop and wrong on a system where one chain is shared: it held `pcm.volumio` for the entire Connect session.
-
-Closing on cork was the obvious answer and it is wrong. A close creates a new device instance, so `hw_ptr` restarts at zero and the reopen races whoever took the chain in between; pause and play resumed silent, and switching source produced a retry loop against MPD. The PCM now survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the plugin writes `APULSE_YIELD_PATH`. A write gap is not a release either: that was tried and reverted, because a live stream can be idle between writes.
-
-The repo and commit are pinned in `docker/run-docker-apulse.sh` only. `scripts/build-apulse.sh` has no fallback and fails if they are unset. When the pin was duplicated in both and only one was updated, the runner's value won and a build produced stock upstream while the `ldd` gate, the payload verification and the manifest prune all passed. Every one of those compares the build to itself.
-
-Four gates now catch a wrong tree, and each compares against something external:
-
-- the existing clone's remote must match the requested repository, or it is re-cloned
-- the checkout of the pinned commit must succeed
-- `HEAD` must equal the requested commit afterwards
-- there must be commits on top of `5d654ce`, since the shim is upstream plus changes by definition
-
-The last one is what caught the stock build.
-
-Override for testing:
-
-```
-APULSE_REF=<sha> ./docker/run-docker-apulse.sh amd64
-```
-
-### ALSA format and period
-
-The shim negotiates both rather than accepting whatever falls out of the Pulse parameters.
-
-For playback it picks the first of `S24_3LE`, `S24_LE`, `S16_LE` that the device actually accepts, tested with `snd_pcm_hw_params_test_format`, and converts in the shim. Soloist decodes everything to `FLOAT_LE`, and Volumio's chain converts to `S24_3LE` at `pcm.softvolume` regardless, so doing it here removes a conversion from the `plug` layer instead of adding one.
-
-The period comes from a tested candidate list, `4096, 2048, 1024, 8192`, and the buffer is a whole multiple of it, at least four periods. Deriving the period from Pulse's `minreq` produced 883 frames, which no candidate list would have chosen and which is where the lossless hunting came from.
-
-The fallback probe runs on a copy of the params, not the live set: Debian's libasound asserts if a failed `set_period_size_first` empties it.
-
-`snd_pcm_open` runs under a quiet error handler. `EBUSY` is another source still holding `plug:volumio` during a handover, and `volumioswitch` prints its own failure on that path; neither is a device fault and neither belongs in the journal as one.
+The git HEAD that produced each shipped payload is recorded in `soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`.
+Rebuild the matrix after committing shim sources so that file names the commit.
 
 ### The ldd gate
 
-The build fails if the resulting libraries link anything that is not on a stock Volumio 4 image.
-The authority for that list is `volumio-os/recipes/base/VolumioBase.conf`, which has `libasound2` but not `libglib2.0`.
-glib and pcre2 are therefore linked statically by rewriting the cmake `link.txt` files to use the `.a` paths.
+The build fails if `libpulse.so.0` links `libpulse`, glib or pcre.
+Allowed runtime dependencies are the loader, the libc family and `libasound.so.2`.
+The authority for that list is `volumio-os/recipes/base/VolumioBase.conf`, which has `libasound2`.
 
-Allowed runtime dependencies are the loader, the libc family, `libasound.so.2`, and the sibling `libpulse*` libraries.
-Anything else rejects the build.
+---
 
-The pinned revision that produced each shipped payload is recorded in `soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`.
+## What this shim does
 
-Static linking of GLib carries an LGPL relink obligation.
-It is satisfied by publishing this build recipe.
-See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the detail.
+The contract is in [`shim/src/stream.c`](shim/src/stream.c). A longer note is in [`shim/README.md`](shim/README.md).
+
+**FLOAT32 identity into `plug:volumio`.** Soloist decodes every quality to FLOAT32. The shim writes that format. `pcm.softvolume` forces `S24_3LE`, so AAMPP does the one conversion. Doing the conversion in the shim was tried; it is not what ships. Bit-perfect is not possible on this chain.
+
+**Pulse parameters pace the client, not the device.** `tlength` (capped by `APULSE_MAX_TLENGTH_MS`) and `minreq` are the Pulse buffer target and write quantum. The ALSA period is `snd_pcm_hw_params_set_period_size_near`. Deriving the period from `minreq` as frames produced ~882 and coupled the Output Buffer slider to the IRQ size; testers changing the slider could not uncouple them.
+
+**The ring is sized in time** at the client's own frame size, not a fixed byte count. A 72 KB ring is 418 ms of S16 stereo and 209 ms of FLOAT32 stereo. Soloist decodes lossy to S16 and lossless to FLOAT32, so a byte-sized ring gave lossless half the buffer while writing twice as much per call.
+
+**`pa_stream_writable_size` is the room left against `tlength`**, not the whole ring. A real Pulse server holds the client at the level it was told to hold. Without that bound the client writes until the ring is full, stalls, then bursts. That alternation was the lossless hunt: Soloist supplied at about 1.234x realtime, filled the ring, got zero, then burst again.
+
+A flush discards the ring, so both `write_index` and `read_index` reset with it. Leaving `write_index` at its accumulated value made `fill` read as the whole session and `writable_size` return zero permanently. `pa_stream_disconnect` has the same hazard on reconnect.
+
+**Flush drops.** `pa_stream_flush` drops the ring, drops and re-prepares the device, and resets the indices. A no-op flush left committed audio playing out across a skip.
+
+**Cork is not a close.** Pause keeps the PCM so resume is instant. Closing on cork creates a new device instance, `hw_ptr` restarts at zero, and the reopen races whoever took the chain. A write gap is not a release either. The close happens only when the plugin writes `APULSE_YIELD_PATH`, or on disconnect.
+
+**READY is synchronous.** `pa_context_connect` sets CONNECTING then READY in the same call. Deferring READY onto the Pulse thread left Soloist in `wait()` forever: no stream, no PCM, Spotify "can't play this right now."
+
+**Stop is bounded.** `snd_pcm_drop` / `close` run on a detached worker. `pa_threaded_mainloop_stop` timed-joins (2 s) and abandons the loop thread rather than joining a closer that never returns. The I/O callback never closes the PCM.
+
+**An xrun is `snd_pcm_prepare` with the playhead held.** Closing from the I/O callback SIGSEGV'd Soloist. Resetting the clock to zero was worse than the original stop: `read_index` then advanced only at underruns. The audio ALSA held is gone, so `read_index` becomes `write_index` less what is still in the ring and was never offered.
+
+Environment names stay `APULSE_*`. They are historical; renaming is a later change. See [`shim/README.md`](shim/README.md).
 
 ---
 
@@ -209,7 +178,7 @@ Notable points:
 
 - `libatomic1` and `patchelf` are installed if missing.
 - Bookworm's glibc is 2.36 and Soloist needs 2.38 or newer. A private sysroot is sideloaded into `/data/soloist/sysroot` and the binary is ELF-patched against it. The system glibc is left alone. Launching through an explicit `ld-linux` instead of patching breaks Soloist's subprocesses.
-- The launcher exports the ALSA device as `APULSE_PLAYBACK_DEVICE`, derived from `PLAYBACK_DEVICE` in the env file. The unit deliberately does **not** pin it: the launcher treats an existing value as an override, so a pinned unit would win permanently and PeppyMeter metering would silently do nothing. `unpin-playback-device.sh` removes the line from older installs. The launcher also exports `APULSE_MAX_TLENGTH_MS`, `APULSE_YIELD_PATH`, `APULSE_EXTERNAL_VOLUME` and, when non-zero, `APULSE_OUTPUT_TRIM_DB`.
+- The launcher exports the ALSA device as `APULSE_PLAYBACK_DEVICE`, derived from `PLAYBACK_DEVICE` in the env file. The names are historical. The unit deliberately does **not** pin the device: the launcher treats an existing value as an override, so a pinned unit would win permanently and PeppyMeter metering would silently do nothing. `unpin-playback-device.sh` removes the line from older installs. The launcher also exports `APULSE_MAX_TLENGTH_MS`, `APULSE_YIELD_PATH`, `APULSE_EXTERNAL_VOLUME` and, when non-zero, `APULSE_OUTPUT_TRIM_DB`.
 - Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; the plugin re-downloads on the next start.
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
@@ -217,10 +186,10 @@ Notable points:
 
 ## Architecture detection
 
-`detect-arch.sh` picks both the Soloist binary and the apulse libraries from the userspace ABI (`dpkg`, `getconf LONG_BIT`, then `VOLUMIO_ARCH`), not from the kernel's `uname -m`.
+`detect-arch.sh` picks both the Soloist binary and the shim libraries from the userspace ABI (`dpkg`, `getconf LONG_BIT`, then `VOLUMIO_ARCH`), not from the kernel's `uname -m`.
 The official Volumio 4 Pi image is armhf even when the kernel is 64-bit, and 64-bit Pi 5 images sometimes still report `VOLUMIO_ARCH=arm`.
 
-| Userspace | Soloist CDN archive | apulse payload | Store architecture |
+| Userspace | Soloist CDN archive | Shim payload | Store architecture |
 |---|---|---|---|
 | `amd64` | `soloist_release_x86_64.tar.gz` | `alsa-lib/amd64` | `amd64` |
 | `armhf` | `soloist_release_arm32.tar.gz` | `alsa-lib/armhf` | `armhf` |
@@ -235,7 +204,7 @@ Those are the two values `package.json` declares.
 
 Do not confuse them with the volumio-os build targets (`arm`, `armv7`, `armv8`, `x64`), which are a different namespace and will be rejected by the store.
 
-The arm64 apulse payload is kept in the tree because `detect-arch.sh` can select it at runtime on a 64-bit userspace image, but it has no store architecture to be published under.
+The arm64 shim payload is kept in the tree because `detect-arch.sh` can select it at runtime on a 64-bit userspace image, but it has no store architecture to be published under.
 Official Volumio 4 Pi images are armhf userspace even on a 64-bit kernel, so the armhf package covers them.
 
 Plugins must be submitted with `volumio plugin submit` from a running Bookworm device, once per architecture, and the version number must change for every resubmission.
@@ -286,7 +255,7 @@ The model is now the same as bluetooth's `btAudioOutput`: **the PCM is the lock,
 
 **Cork is not a close.** Pausing in the Spotify app keeps the device, which is what makes resume instant and gapless. Closing on cork was tried and reverted: a close creates a new device instance, and the reopen fought whoever had taken the chain in the meantime.
 
-The close is therefore signalled, not inferred. The plugin writes `/data/soloist/alsa.yield`; apulse closes the PCM when it sees that file and unlinks it. `APULSE_YIELD_PATH` is exported by `launch-soloist.sh`. The file is cleared on daemon start and at the top of every takeover, so a stale one cannot release a session that is starting.
+The close is therefore signalled, not inferred. The plugin writes `/data/soloist/alsa.yield`; the shim closes the PCM when it sees that file and unlinks it. `APULSE_YIELD_PATH` is exported by `launch-soloist.sh`. The file is cleared on daemon start and at the top of every takeover, so a stale one cannot release a session that is starting.
 
 Four helpers read the lock:
 
@@ -306,7 +275,7 @@ Four helpers read the lock:
 3. `volumioStop()`, then wait until no other process holds the device
 4. claim, and clear the yield file
 
-**Takeover must not yield.** On first play the device is already open, and Peppyalsa negotiates a different period than we do (16384 against 22050). Releasing our own handle and reopening in that state failed `avail()`. Takeover displaces whoever else holds the device; it does not release ours.
+**Takeover must not yield.** On first play the device is already open, and Peppyalsa negotiates a different period than we do. Releasing our own handle and reopening in that state failed `avail()`. Takeover displaces whoever else holds the device; it does not release ours.
 
 `ignoreUpdate` is why step 2 exists at all. MPD announces its stop, `syncState` reads that as end-of-track and starts the next queue item, and MPD is back on `pcm.volumio` alongside Soloist. ytcr and squeezelite_mc mute it the same way. It is cleared on start, on stop, on yield and in `unsetVolatile`, so it can never be left latched.
 
@@ -320,7 +289,7 @@ Two state rules that are not obvious and both came from real failures:
 
 Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
 
-The corresponding half is in the fork: the PCM survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the yield file appears.
+The corresponding half is in the shim: the PCM survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the yield file appears.
 
 ---
 
@@ -346,7 +315,7 @@ A fixed offset on the stream, `-12` to `+12` dB, default 0. Distinct from volume
 
 It exists because with `APULSE_EXTERNAL_VOLUME` set the shim does no sample scaling at all, so this is the only place a per-source offset can be applied. It is what raises or lowers what per-source meters and the mixer see from Spotify without affecting MPD or anything else.
 
-`output_trim_db` reaches the daemon as `OUTPUT_TRIM_DB`, and `launch-soloist.sh` exports `APULSE_OUTPUT_TRIM_DB` only when it is non-zero. The shim applies it before the ALSA write (fork `858521f`).
+`output_trim_db` reaches the daemon as `OUTPUT_TRIM_DB`, and `launch-soloist.sh` exports `APULSE_OUTPUT_TRIM_DB` only when it is non-zero. The shim applies it before the ALSA write.
 
 The launcher validates with an explicit case list rather than a `[0-9]*` glob. A leading minus does not match that glob, so `-6` would have been silently discarded and the setting would have appeared to work in one direction only.
 
@@ -410,7 +379,7 @@ One limitation: this measures what was downloaded, not what Spotify holds. A tra
 *delayp = local_delay + target_delay;
 ```
 
-Both stages derive from `buffer_attr.tlength`, so a client's request lands twice, in series. Each stage is capped by the ioplug at `SND_PCM_IOPLUG_HW_BUFFER_BYTES`, 524288 bytes, which is 65536 frames or 1.486 s at 44100 S24_LE stereo. apulse's 2 s default therefore produced about 2.97 s of committed audio.
+Both stages derive from `buffer_attr.tlength`, so a client's request lands twice, in series. Each stage is capped by the ioplug at `SND_PCM_IOPLUG_HW_BUFFER_BYTES`, 524288 bytes, which is 65536 frames or 1.486 s at 44100 S24_LE stereo. An uncapped 2 s Pulse default therefore produced about 2.97 s of committed audio.
 
 Measured on a Pi with a HiFiBerry DAC, skip command to first audible frame:
 
@@ -425,48 +394,13 @@ Measured on a Pi with a HiFiBerry DAC, skip command to first audible frame:
 
 The hardware buffer read 65536 frames in every case, so the extra time is the switch's own buffer, not the endpoint.
 
-Moving the output device down the chain would recover the time and is the wrong fix: every faster path bypasses the contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is the whole reason for entering at `pcm.volumio`. The cap is applied in apulse instead, where it shrinks both stages together because the switch sizes its target from what the client asks for.
+Moving the output device down the chain would recover the time and is the wrong fix: every faster path bypasses the contributions from FusionDSP, PeppyMeter, Stylish Player and mpd_oled, which is the whole reason for entering at `pcm.volumio`. The cap is applied in the shim instead, where it shrinks both stages together because the switch sizes its target from what the client asks for.
 
-At 500 ms the Pulse target is 22050 frames. The ALSA period is no longer derived from that.
+At 500 ms the Pulse target is 22050 frames. The ALSA period is not derived from that.
 
-The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency, and the fork caps the Pulse figure rather than the `/proc/asound` `delay` line.
+The switch's own `snd_pcm_delay` can still sit at 65536 frames (~1.48 s) after that shrink. Soloist reads that through Pulse as latency; the shim reports `sink_usec = 0` rather than that `/proc/asound` `delay` line.
 
 Pulse `minreq` stays the client's write quantum, typically 20 ms. It is not the ALSA period. The useful floor on the Output Buffer setting is about the software target, not the device IRQ size.
-
-### Device format and period are not the Pulse spec
-
-The ring and `writable_size` work below paced Soloist as a client. It did not change what we asked ALSA for. Two things were still coupled that a real Pulse server keeps separate, and testers changing the Output Buffer slider could not uncouple them.
-
-**The ALSA period was `minreq / frame_size`.** Soloist's default `minreq` is 20 ms, and the clamp only shrinks it when it exceeds `tlength/4`. So the device stayed at ~882 frames no matter what the slider said. That is why cache, buffer and trim changes did not move lossless stutter on a Pi 3.
-
-**FLOAT32 was opened on `plug:volumio`.** `pcm.softvolume` already forces `S24_3LE`, so the float never reached the DAC; `plug` converted every short write through volumioswitch and softvol. On a Pi 3 + HiFiBerry that is the lossless-only cracking, with nothing in the Soloist log.
-
-**`set_period_size_near(minreq)` then `set_buffer_size_near(tlength)`** can empty an interval on a HAT or ioplug with discrete sizes. Debian `libasound` asserts (`pcm_params.c:170`) and the daemon ABRTs.
-
-The shim now does what Pulse/PipeWire do. The client keeps its sample spec and `tlength`/`minreq`. Playback converts to `S24_3LE` (then `S24_LE`, then `S16_LE`) before `snd_pcm_writei`. The period is chosen from `{4096, 2048, 1024, 8192}` after `snd_pcm_hw_params_test_period_size` — 4096 frames is ~93 ms at 44.1 kHz, and 4×4096 is Peppyalsa's 16384. The buffer is an integer number of those periods, tested before set. The io callback writes one period, not 16 KB (46 ms of FLOAT32 against 93 ms of S16).
-
-### Supply rate, and why lossless was the only quality that hunted
-
-The buffer work above bounded the latency but did not stop lossless rushing and slowing. Six changes to the playback clock made no audible difference. An upstream trace of the Soloist to apulse conversation showed why: the clock was never the problem.
-
-Soloist was supplying audio at **1.234x realtime**. It writes 32768 bytes at a time, which is 93 ms at float32 stereo, and the median gap between writes was 98 ms, but 43% of writes arrived faster: 26% at 40 to 80 ms, 13% at 10 to 40 ms, 4% under 10 ms. It filled the ring, got a zero from `pa_stream_writable_size`, stalled, then burst again. That alternation is what you hear.
-
-Two causes, both in apulse, and both explain why only lossless was affected.
-
-**The ring was sized in bytes.** `ringbuffer_new(72 * 1024)` is a duration only if the frame size is fixed: 418 ms of S16 stereo, but 209 ms of FLOAT32 stereo. Soloist decodes lossy to S16 and lossless to FLOAT32, so lossless got half the buffer while writing twice as much per call. The ring is now 500 ms at the client's own frame size.
-
-**`writable_size` reported the whole ring rather than the room left against `tlength`.** A real PulseAudio server bounds it by the target, which is what holds a client at the level it was told to hold. Without that bound the client writes until the ring is full instead of until the target is met. It is now `tlength - fill`.
-
-The bound has a consequence that has to be handled with it: a flush discards the ring, so both `write_index` and `read_index` must reset with it. Leaving `write_index` at its accumulated value made `fill` read as the whole session, `room` went negative, `writable_size` returned zero permanently, and track changes hung with no response at all. `pa_stream_disconnect` has the same hazard for a reconnect on the same stream.
-
-One related upstream behaviour is now fixed rather than bounded. apulse implemented `pa_stream_flush` as a no-op:
-
-```c
-static void pa_stream_flush_impl(pa_operation *op) {
-    // TODO: is it ok to do nothing?
-```
-
-so a skip discarded nothing and the already-committed audio played out. Confirmed on hardware by sampling `delay` across a skip: it never fell. The flush now drops the ring, drops and re-prepares the device, and resets the indices and the clock with it.
 
 ### Recovering from an underrun
 
@@ -479,34 +413,26 @@ pcm_volumioswitch.c:912 PCM volumioMultiRoomServer cannot write to target PCM
 softvolume as it has failed its update check
 ```
 
-That is `snd_pcm_avail` on its target returning a negative errno, which the plugin turns into `-EPIPE` upward. Neither of its two `snd_pcm_prepare(target)` calls is on the advance path, so recovery is the client's job. apulse recovers and the PCM comes back, which is why nothing looked wrong.
+That is `snd_pcm_avail` on its target returning a negative errno, which the plugin turns into `-EPIPE` upward. Neither of its two `snd_pcm_prepare(target)` calls is on the advance path, so recovery is the client's job.
 
-The damage is to the clock. `read_index` is the byte position of the DAC and comes only from `hw_ptr` in `/proc/asound`, which `read_hw_pcm_snap` refuses to read unless the PCM is RUNNING. An underrun is precisely not running, so the read fails, the cached path is dropped, the rescan fails on every candidate for the same reason, and the held position is returned. The one-shot `play_clock: no hardware hw_ptr found` line has already been spent at connect, so none of this is announced.
+The shim prepares the PCM and holds the playhead. The audio ALSA held at the underrun is gone, so `read_index` becomes `write_index` less what is still queued in the ring and was never offered. Resetting the clock to zero was tried and was worse: the stream then progressed only by underrunning.
 
-From there it sustains itself. `read_index` stops while `write_index` continues, so the fill level reaches `tlength`; `pa_stream_writable_size` is bounded by `tlength - fill` and reaches zero; the client stops writing; with nothing to write the switch never reaches its `snd_pcm_start` on the target, so the hardware never returns to RUNNING to unfreeze the clock.
-
-Captured with `APULSE_DIAG=1`: `r` frozen at 1423672 while `w` ran on to 1531904, fill 108232 against a `tlength` of 105840, `wr=0` and `cbytes=0` for the remaining twenty seconds, `avail` sitting at the full 16384 frames.
-
-The fix is two things that must move together. The audio ALSA held at the underrun is gone, so `read_index` becomes `write_index` less what is still queued in our own ring and was never offered. And the clock is **held** at that same position rather than reset, using the mechanism a Volumio yield already uses: the origin is rebuilt from the frozen microsecond value on the first RUNNING sample.
-
-Resetting it instead was tried, and it was worse than the original fault. `stream_clock_reset` means the audio is gone and the playhead restarts at zero, which is why all four of its other callers zero both indices alongside it. Leaving `write_index` running while zeroing the playhead means the resume branch never fires, the position counts up from zero again, and the monotonic guard pins `read_index` at the jumped value for the rest of the track. Measured: `read_index` advanced only at underruns, in exact steps of one `tlength`, ninety-four times in a single session. The stream was progressing solely by underrunning, which is continuous dropouts instead of one stop.
-
-What triggers the first underrun is still open. Before it, the fill level collapses to zero with a 95 ms gap in the client's write cadence while the ALSA buffer is 371 ms deep. This work makes the recovery correct; it does not explain the starvation.
+What triggers the first underrun is still open. Recovery from one is correct; the fill level collapsing to zero in the first place is not accounted for.
 
 ### Reading a playback fault
 
-Every diagnostic in the shim is behind `APULSE_DIAG`, and `diag_on()` reads it once, so the shipped build costs nothing when it is unset. The plugin's **Verbose logging** switch sets it, via `VERBOSE_LOGGING` in the env file and `launch-soloist.sh`. The startup line reports `diag=1` or `diag=off` so a capture states its own provenance.
+Every diagnostic in the shim is behind `APULSE_DIAG`. The plugin's **Verbose logging** switch sets it, via `VERBOSE_LOGGING` in the env file and `launch-soloist.sh`. The startup line reports `diag=1` or `diag=off` so a capture states its own provenance.
 
 What it makes visible, none of which reaches the journal otherwise:
 
 | Line | What it answers |
 |---|---|
-| `1s wake= wr= short= err= xrun= pad=` | whether the write loop is healthy, starving, or spinning |
-| `1s api reads= updates= wsize= writes= gap` | what the client is actually doing, and whether it is being told there is no room |
-| `timing[get\|upd] w= r= fill=` | the entire timing contract handed to Soloist, which is the only thing it reads |
-| `xrun recovered: read_index N -> M` | an underrun happened and was accounted for |
-| `pcm unrecovered (N), reopening` | recovery failed and the device is being closed and reopened |
-| `connect / release / reacquire` | device lifecycle and the parameters actually negotiated |
+| `context ready` | Pulse context reached READY (must appear before any stream) |
+| `connect corked= tlength= minreq=` | stream connect parameters actually used |
+| `pcm open ... period= buffer= rate= fmt=` | device negotiated |
+| `pcm close handed off keep=` | yield or disconnect started a close worker |
+| `avail` / `writei` / `pcm prepare failed` | ALSA fault and whether prepare ran |
+| `mainloop join timed out, abandoning thread` | stop did not wait forever on `snd_pcm_close` |
 
 The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u volumio --no-pager > /data/...` before restarting.
 
@@ -516,11 +442,11 @@ The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u 
 
 - **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button.
 - **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
-- **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in our apulse build instead.
+- **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in the shim instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter metering.** When the screensaver's Spotify metering is on, the daemon plays through `plug:spotify`, PeppyMeter's metered entry at contribution priority 5, so its VU meters respond to Spotify. Contributions above that point are skipped: FusionDSP at 10 and Stylish Player at 7. PeppyMeter already forces its Spotify toggle off when DSP is on. See [PeppyMeter integration](#peppymeter-integration).
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
-- **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
+- **arm64 is unverified at runtime.** Built by the matrix, but only armhf and amd64 have been exercised.
 - **The RAM cache is untested at its limit.** Selecting RAM mounts a tmpfs over `/data/soloist/cache`, sized at a quarter of `MemTotal` and capped by the Cache size setting. Whether the daemon evicts or aborts when that filesystem fills has not been observed, because no session has yet reached the ceiling.
 - **The first underrun is unexplained.** Recovery from one is now correct, but the fill level collapsing to zero in the first place is not accounted for. See [Recovering from an underrun](#recovering-from-an-underrun).
 - armv6 devices are out of scope.
@@ -535,10 +461,10 @@ Please route reports to the project that can act on them.
 | Symptom | Where it belongs |
 |---|---|
 | Plugin behaviour, packaging, install, Volumio integration | this repository |
+| Pulse shim (`libpulse.so.0`) playback, xruns, stop hangs | this repository |
 | Soloist client bugs and crashes | [spotify/soloist issues](https://github.com/spotify/soloist/issues) (issue creation is currently restricted) |
 | Soloist questions, support, feature requests | the [Spotify Developer Community](https://developer.spotify.com/community) thread linked from the Soloist docs |
 | Spotify account, playback rights, Connect behaviour | Spotify support |
-| apulse behaviour, including the flush and buffering findings | [i-rinat/apulse issues](https://github.com/i-rinat/apulse/issues) |
 | Volumio core, AAMPP, ALSA chain | Volumio's own trackers |
 
 **Never post API keys, unredacted logs, crash reports or data directory contents in any public tracker.**
@@ -557,15 +483,12 @@ Summary:
 
 | Component | Licence | Redistributed here |
 |---|---|---|
-| This project's code | MIT | yes |
-| apulse | MIT | yes, as prebuilt libraries under `soloist_connect/alsa-lib/`, built from the fork |
-| GLib | LGPL-2.1-or-later | statically linked into the apulse libraries |
-| PCRE2 | BSD-3-Clause | statically linked into the apulse libraries |
-| PulseAudio public headers | LGPL-2.1-or-later | no, build-time only |
+| This project's code, including the Pulse shim | MIT | yes, source in `shim/` and as `libpulse.so.0` under `soloist_connect/alsa-lib/` |
+| PulseAudio public headers | LGPL-2.1-or-later | yes, build-time only, in `shim/include/pulse/` |
 | Spotify Soloist | proprietary, Spotify AB | **no**, downloaded from Spotify's CDN at install time |
 | glibc sideload packages | LGPL-2.1-or-later and Debian terms | no, downloaded from the Debian archive at install time |
 
-Full detail, including the LGPL relink statement and the Soloist redistribution position, is in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Full detail and the Soloist redistribution position are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 

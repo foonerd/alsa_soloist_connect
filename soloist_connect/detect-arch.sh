@@ -1,5 +1,5 @@
 #!/bin/bash
-# Userspace arch for Soloist + apulse.
+# Userspace arch for Soloist + the Pulse shim.
 #
 # VOLUMIO_ARCH is an image label, not the running ABI. Official 32-bit Pi
 # images set VOLUMIO_ARCH=arm even when the kernel is aarch64 (uname -m

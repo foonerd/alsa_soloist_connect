@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build apulse for every Volumio 4 architecture (amd64, arm64, armhf).
-# Same matrix style as peppyalsa-builds/build-matrix.sh.
+# Build the in-tree Pulse shim for every Volumio 4 architecture
+# (amd64, arm64, armhf). Same matrix style as peppyalsa-builds/build-matrix.sh.
 
 set -e
 
@@ -12,7 +12,7 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo "apulse build matrix (Volumio 4 / Bookworm)"
+echo "Pulse shim build matrix (Volumio 4 / Bookworm)"
 echo "========================================"
 echo ""
 
@@ -23,7 +23,7 @@ for ARCH in "${ARCHITECTURES[@]}"; do
   echo "----------------------------------------"
   echo "Building for: $ARCH"
   echo "----------------------------------------"
-  ./docker/run-docker-apulse.sh "$ARCH" $VERBOSE
+  ./docker/run-docker-shim.sh "$ARCH" $VERBOSE
 done
 
 echo ""
@@ -31,7 +31,7 @@ echo "========================================"
 echo "Build matrix complete"
 echo "========================================"
 echo ""
-echo "Payload (installed and verified by run-docker-apulse.sh):"
+echo "Payload (installed and verified by run-docker-shim.sh):"
 for ARCH in "${ARCHITECTURES[@]}"; do
   PAYLOAD_DIR="soloist_connect/alsa-lib/$ARCH"
   if [ -d "$PAYLOAD_DIR" ]; then

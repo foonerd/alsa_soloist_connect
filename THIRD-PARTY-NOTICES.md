@@ -5,63 +5,38 @@ It does not relicense, override or replace any of their terms.
 Each component below keeps its own licence, and those terms govern that component.
 
 The project's own code is MIT, Copyright (c) 2026 Just a nerd. See [LICENSE](LICENSE).
+That includes the Pulse shim in [`shim/`](shim/) and the shipped
+`libpulse.so.0` under `soloist_connect/alsa-lib/`.
 
 ---
 
 ## Redistributed in this repository and in the plugin package
-
-### apulse
-
-- Upstream: https://github.com/i-rinat/apulse
-- Licence: MIT
-- Copyright (c) 2014-2018 Rinat Ibragimov
-- Where: `soloist_connect/alsa-lib/{amd64,arm64,armhf}/`
-- Full text: [`soloist_connect/alsa-lib/LICENSE.apulse`](soloist_connect/alsa-lib/LICENSE.apulse)
-
-The pinned upstream revision that produced each shipped payload is recorded in
-`soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`, and the build recipe is in
-`docker/` and `scripts/build-apulse.sh`.
-
-**These are modified builds, not stock apulse.** The patches applied are in
-[`patches/`](patches), each carrying its rationale and evidence in its header.
-They are applied in the container against the pinned revision, and the build
-fails if any patch does not apply. MIT permits modification; the licence text
-and copyright notice ship unchanged alongside the binaries.
-
-### GLib and PCRE2 (statically linked into the apulse libraries)
-
-- GLib: https://gitlab.gnome.org/GNOME/glib
-- PCRE2: https://github.com/PCRE2Project/pcre2
-- Licence: LGPL-2.1-or-later (GLib); PCRE2 is BSD-3-Clause, and the Debian
-  `libpcre2-dev` archives used here are the upstream sources
-- Reason: `libglib2.0` is not on a stock Volumio 4 image. The authority for the
-  permitted runtime set is `volumio-os/recipes/base/VolumioBase.conf`, which
-  lists `libasound2` but not glib.
-
-LGPL-2.1 section 6 requires that a work using the library statically can be
-relinked against a modified version of it.
-That is satisfied here by publishing the complete build in this repository:
-
-- `docker/Dockerfile.apulse.<arch>` fixes the Debian Bookworm base and the
-  packages that supply `libglib-2.0.a` and `libpcre2-8.a`
-- `scripts/build-apulse.sh` performs the clone at a pinned revision, the cmake
-  configuration, and the link-line rewrite that pulls in the static archives
-- `docker/run-docker-apulse.sh` and `build-matrix.sh` reproduce the build for
-  any of the three architectures
-
-Anyone can therefore substitute their own GLib, rerun the build, and obtain a
-relinked `libpulse.so.0`.
 
 ### PulseAudio public headers
 
 - Upstream: https://www.freedesktop.org/wiki/Software/PulseAudio/
 - Licence: LGPL-2.1-or-later
 - Copyright 2004-2006 Lennart Poettering; Copyright 2006 Pierre Ossman for Cendio AB
-- Where: vendored inside the apulse source tree
-  (`3rdparty/pulseaudio-headers/`) and used at build time only
+- Where: [`shim/include/pulse/`](shim/include/pulse/), used at build time only
 
-apulse is an independent implementation of the PulseAudio client API.
-No PulseAudio library code is redistributed here.
+The shim is an independent implementation of the PulseAudio client symbols
+Soloist looks up. No PulseAudio library code is redistributed. The shipped
+`libpulse.so.0` is this project's MIT code.
+
+---
+
+## Not used by the shipped payload
+
+The following leftover path built a patched [apulse](https://github.com/i-rinat/apulse)
+and statically linked GLib and PCRE2. `build-matrix.sh` does not invoke it.
+The files remain in the tree and are unused:
+
+- `docker/run-docker-apulse.sh`
+- `scripts/build-apulse.sh`
+
+The Bookworm images are still named `Dockerfile.apulse.<arch>` and
+`soloist-apulse-builder:<arch>`. [`docker/run-docker-shim.sh`](docker/run-docker-shim.sh)
+reuses those images as the toolchain. The live shim does not link glib or pcre.
 
 ---
 

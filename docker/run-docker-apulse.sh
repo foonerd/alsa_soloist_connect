@@ -1,4 +1,7 @@
 #!/bin/bash
+# UNUSED. The live payload is built by docker/run-docker-shim.sh from shim/.
+# Leftover from the patched-apulse path; build-matrix.sh does not invoke this.
+#
 # alsa_soloist_connect docker/run-docker-apulse.sh
 # Builds the apulse Pulse-to-ALSA shim in a Bookworm container.
 #
@@ -142,7 +145,7 @@ mkdir -p "$OUTPUT_DIR"
 APULSE_REPO="${APULSE_REPO:-https://github.com/foonerd/apulse.git}"
 # Exact commit, never a branch: a moving pin makes two builds of the same plugin
 # version produce different shims.
-APULSE_REF="${APULSE_REF:-47d9f125c40c89b154811246d8b62f87c95be737}"
+APULSE_REF="${APULSE_REF:-50a006adc2964713d1f53e9c7bcb9f807bc43b39}"
 
 echo "[+] Source: $APULSE_REPO ($APULSE_REF)"
 echo ""

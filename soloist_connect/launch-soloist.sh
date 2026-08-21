@@ -1,7 +1,8 @@
 #!/bin/bash
 # Launcher for the Soloist daemon on Volumio 4.
 # Reads settings from /data/soloist/soloist.env (written by the plugin).
-# Routes audio through the private apulse shim onto pcm.volumio.
+# Routes audio through the in-tree Pulse shim (libpulse.so.0) onto pcm.volumio.
+# Environment names APULSE_* are historical; the launcher still exports them.
 # Handles the glibc sideload when the system glibc is older than Soloist.
 set -e
 
@@ -39,8 +40,7 @@ APULSE_ARCH="$("$PLUGIN_DIR/detect-arch.sh")"
 APULSE_DIR="$PLUGIN_DIR/alsa-lib/$APULSE_ARCH"
 
 # Diagnostic override. APULSE_DIR_OVERRIDE points the daemon at a different
-# apulse build, which is how a trace build (WITH_TRACE=2, unstripped) is used
-# without installing it into the plugin payload.
+# shim build, used without installing it into the plugin payload.
 #
 # It has to be an explicit variable: this script unsets LD_LIBRARY_PATH above,
 # to keep the sideloaded 32-bit glibc away from bash and patchelf, and then sets
@@ -57,7 +57,7 @@ if [ -n "${APULSE_DIR_OVERRIDE:-}" ]; then
 fi
 
 if [ ! -f "$APULSE_DIR/libpulse.so.0" ]; then
-  echo "apulse shim missing at $APULSE_DIR (userspace $APULSE_ARCH, uname=$(uname -m))." >&2
+  echo "Pulse shim missing at $APULSE_DIR (userspace $APULSE_ARCH, uname=$(uname -m))." >&2
   exit 1
 fi
 
@@ -69,9 +69,9 @@ else
   export APULSE_PLAYBACK_DEVICE="${APULSE_PLAYBACK_DEVICE:-plug:volumio}"
 fi
 # One-shot close. Cork does not free the device; unsetVolatile/stop create
-# this file and apulse closes on it, then unlinks.
+# this file and the shim closes on it, then unlinks.
 export APULSE_YIELD_PATH="${APULSE_YIELD_PATH:-/data/soloist/alsa.yield}"
-# Caps the buffer our patched apulse requests, and the Pulse latency it
+# Caps the buffer the shim requests, and the Pulse latency it
 # reports. volumioswitch delay is local + target and can sit at ~1.5 s
 # even when the slider has already shrunk the hardware PCM. Unset or 0
 # on an old env file would leave that uncapped.
@@ -105,10 +105,9 @@ fi
 unset PULSE_SERVER
 unset PIPEWIRE_RUNTIME_DIR
 
-# Verbose Logging in the plugin settings. Turns on the diagnostics in our
-# apulse fork, which are otherwise dead code: diag_on() reads APULSE_DIAG once
-# and every diag function returns early when it is unset, so setting this
-# changes no behaviour, only what is written to stderr.
+# Verbose Logging in the plugin settings. Turns on the diagnostics in the
+# shim. APULSE_DIAG is read once; when it is unset the shim stays quiet,
+# so setting this changes no behaviour, only what is written to stderr.
 #
 # It has to be set here rather than exported by the caller, for the same reason
 # as APULSE_DIR_OVERRIDE above: this script unsets and rebuilds the environment
@@ -187,7 +186,7 @@ if [ -d "$SYSROOT" ]; then
   esac
 fi
 
-# apulse only. Soloist's RPATH already points at the sideloaded glibc.
+# Shim directory only. Soloist's RPATH already points at the sideloaded glibc.
 # Putting sysroot on LD_LIBRARY_PATH here would poison nothing (we exec),
 # but keep it off so a mistaken wrapper cannot break 64-bit helpers.
 exec env LD_LIBRARY_PATH="$APULSE_DIR" \

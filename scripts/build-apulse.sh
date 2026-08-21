@@ -1,4 +1,7 @@
 #!/bin/bash
+# UNUSED. The live payload is built by docker/run-docker-shim.sh from shim/.
+# Leftover from the patched-apulse path; build-matrix.sh does not invoke this.
+#
 # alsa_soloist_connect scripts/build-apulse.sh
 # Runs inside the Bookworm container. Builds apulse with glib statically
 # linked so the result only needs libraries present on a stock Volumio 4

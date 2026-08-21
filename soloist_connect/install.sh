@@ -31,7 +31,7 @@ echo "Detected userspace $APULSE_ARCH (uname=$(uname -m))"
 
 APULSE_SRC="$PLUGIN_DIR/alsa-lib/$APULSE_ARCH"
 if [ ! -f "$APULSE_SRC/libpulse.so.0" ]; then
-  echo "ERROR: apulse shim for $APULSE_ARCH is not in the plugin package."
+  echo "ERROR: Pulse shim for $APULSE_ARCH is not in the plugin package."
   echo "Build it on the development host:"
   echo "  cd alsa_soloist_connect && ./build-matrix.sh"
   echo "  cp -a out/$APULSE_ARCH/. soloist_connect/alsa-lib/$APULSE_ARCH/"
