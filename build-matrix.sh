@@ -36,6 +36,9 @@ for ARCH in "${ARCHITECTURES[@]}"; do
   PAYLOAD_DIR="soloist_connect/alsa-lib/$ARCH"
   if [ -d "$PAYLOAD_DIR" ]; then
     echo "  $PAYLOAD_DIR/"
-    md5sum "$PAYLOAD_DIR"/libpulse*.so.0 2>/dev/null | sed 's/^/    /'
+    # Indent with a builtin loop, not sed.
+    md5sum "$PAYLOAD_DIR"/libpulse*.so.0 2>/dev/null | while IFS= read -r line; do
+      printf '    %s\n' "$line"
+    done
   fi
 done

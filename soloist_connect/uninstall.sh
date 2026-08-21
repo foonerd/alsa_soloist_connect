@@ -8,6 +8,29 @@ echo "Uninstalling Spotify Soloist Connect..."
 
 ENV_FILE="/data/soloist/soloist.env"
 
+# Read one KEY="value" line from the env file using shell builtins only.
+# No sed, and no source: this runs as root while the env file is written by
+# the plugin as the volumio user, so sourcing it would execute volumio-owned
+# content with root privileges. The format is fixed by writeEnvFile() in
+# index.js, so a literal prefix match and two quote strips are sufficient.
+read_env_value() {
+  local key="$1"
+  local line
+  [ -f "$ENV_FILE" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) ;;
+      *) continue ;;
+    esac
+    line="${line#"$key"=}"
+    line="${line#\"}"
+    line="${line%\"}"
+    printf '%s' "$line"
+    return 0
+  done < "$ENV_FILE"
+  return 1
+}
+
 systemctl stop soloist.service 2>/dev/null || true
 systemctl disable soloist.service 2>/dev/null || true
 rm -f /etc/systemd/system/soloist.service
@@ -26,11 +49,15 @@ rm -f /etc/sudoers.d/volumio-user-soloist_connect
 # worth keeping anyway, so the full removal path is taken.
 RETAIN="false"
 if [ -f "$ENV_FILE" ]; then
-  RETAIN=$(sed -n 's/^RETAIN_API_KEY="\(.*\)"$/\1/p' "$ENV_FILE")
+  RETAIN="$(read_env_value RETAIN_API_KEY || true)"
 fi
 
 if [ "$RETAIN" = "true" ]; then
   echo "Retaining API key and paired session in /data/soloist"
+  # The cache may be a tmpfs (CACHE_LOCATION=ram). rm -rf on a live mount
+  # empties it and leaves the mount behind, so drop it first. || true because
+  # disk mode has nothing mounted, which is the normal case.
+  umount /data/soloist/cache 2>/dev/null || true
   # Removed: the downloaded binary, its staging copy, the sideloaded glibc and
   # the playback cache. All are re-created on install.
   rm -rf /data/soloist/bin

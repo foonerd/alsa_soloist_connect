@@ -114,7 +114,10 @@ fi
 
 echo "[+] upstream base: $(git rev-parse --short $UPSTREAM_BASE)"
 echo "[+] local commits on top of upstream:"
-printf '%s\n' "$LOCAL_COMMITS" | sed 's/^/      /'
+# Indent with a builtin loop, not sed.
+printf '%s\n' "$LOCAL_COMMITS" | while IFS= read -r line; do
+  printf '      %s\n' "$line"
+done
 
 # A tree that is not clean means the pin does not describe what is being built.
 if [ -n "$(git status --porcelain)" ]; then
@@ -178,10 +181,57 @@ cmake .. \
 # cmake/pkg-config would link -lglib-2.0 dynamically. Replace with the
 # archive paths so the linker treats them as inputs it cannot reorder away
 # (same trick as ch341-i2c-usb/build for libfftw3 / libiniparser).
+#
+# Rewritten with shell builtins rather than sed -i. link.txt is a cmake
+# generated file, and an in-place stream edit of a generated file is the
+# failure mode this project does not accept: a pattern that silently matches
+# nothing produces a dynamically linked shim that passes every later gate,
+# because each of those gates compares the build to itself. Read, substitute
+# the literal token, write, and count the files actually changed.
 echo "[+] Patching link lines for static glib..."
-find . -name link.txt -print0 | while IFS= read -r -d '' f; do
-  sed -i "s|-lglib-2.0|${GLIB_A} ${PCRE_A}|g" "$f"
-done
+PATCHED=0
+while IFS= read -r -d '' f; do
+  changed=0
+  tmp="$f.static"
+  : > "$tmp"
+  line=""
+  # read returns non-zero at EOF without a terminating newline, leaving the
+  # partial line in $line. Handle that remainder after the loop so a file with
+  # no trailing newline is reproduced byte for byte rather than gaining one.
+  while IFS= read -r line; do
+    case "$line" in
+      *-lglib-2.0*)
+        line="${line//-lglib-2.0/${GLIB_A} ${PCRE_A}}"
+        changed=1
+        ;;
+    esac
+    printf '%s\n' "$line" >> "$tmp"
+  done < "$f"
+  if [ -n "$line" ]; then
+    case "$line" in
+      *-lglib-2.0*)
+        line="${line//-lglib-2.0/${GLIB_A} ${PCRE_A}}"
+        changed=1
+        ;;
+    esac
+    printf '%s' "$line" >> "$tmp"
+  fi
+  mv "$tmp" "$f"
+  if [ "$changed" -eq 1 ]; then
+    PATCHED=$((PATCHED + 1))
+  fi
+done < <(find . -name link.txt -print0)
+
+# A build where nothing matched would link glib dynamically and then fail the
+# ldd gate at step 5, but only after a full compile. Fail here instead, where
+# the reason is still visible.
+if [ "$PATCHED" -eq 0 ]; then
+  echo "[!] ERROR: no link.txt contained -lglib-2.0"
+  echo "    cmake did not request glib, or the link line format changed."
+  echo "    Building on would produce a dynamically linked shim."
+  exit 1
+fi
+echo "[+] Patched $PATCHED link.txt file(s)"
 
 make -j"$(nproc)"
 
