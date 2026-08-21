@@ -62,7 +62,7 @@ chown -R volumio:volumio /data/soloist
 # ---------------------------------------------------------------------------
 # Static systemd unit. No Pulse. Device comes from PLAYBACK_DEVICE in the env file.
 # ---------------------------------------------------------------------------
-chmod +x "$PLUGIN_DIR/launch-soloist.sh"
+chmod +x "$PLUGIN_DIR/launch-soloist.sh" "$PLUGIN_DIR/cache-location.sh"
 
 cat > /etc/systemd/system/soloist.service << 'EOF'
 [Unit]
@@ -74,6 +74,11 @@ Wants=network-online.target
 Type=simple
 User=volumio
 Group=volumio
+# "+" runs this as root regardless of User=, which a mount requires. Keeping
+# it here rather than in a sudoers rule means no further NOPASSWD binary.
+# It reconciles the tmpfs cache with CACHE_LOCATION in the env file and is a
+# no-op in disk mode, so it is safe on every start.
+ExecStartPre=+/data/plugins/music_service/soloist_connect/cache-location.sh
 ExecStart=/data/plugins/music_service/soloist_connect/launch-soloist.sh
 Restart=on-failure
 RestartSec=5
@@ -117,7 +122,7 @@ fi
 # ---------------------------------------------------------------------------
 # Download the Soloist binary from the official Spotify CDN
 # ---------------------------------------------------------------------------
-chmod +x "$PLUGIN_DIR/download-soloist.sh" "$PLUGIN_DIR/setup-glibc.sh" "$PLUGIN_DIR/patch-soloist.sh" "$PLUGIN_DIR/detect-arch.sh" "$PLUGIN_DIR/unpin-playback-device.sh"
+chmod +x "$PLUGIN_DIR/download-soloist.sh" "$PLUGIN_DIR/setup-glibc.sh" "$PLUGIN_DIR/patch-soloist.sh" "$PLUGIN_DIR/detect-arch.sh" "$PLUGIN_DIR/unpin-playback-device.sh" "$PLUGIN_DIR/cache-location.sh"
 bash "$PLUGIN_DIR/download-soloist.sh"
 
 # Soloist builds require a recent glibc; sideload one if the system's is too old

@@ -68,6 +68,7 @@ if [ "$RETAIN" = "true" ]; then
   # the stored Spotify Connect session). Removing data/ would force re-pairing.
 else
   echo "Removing all Soloist data including the API key"
+  umount /data/soloist/cache 2>/dev/null || true
   rm -rf /data/soloist
 fi
 

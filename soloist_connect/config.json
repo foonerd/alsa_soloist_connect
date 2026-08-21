@@ -15,6 +15,10 @@
     "type": "number",
     "value": 1024
   },
+  "cache_location": {
+    "type": "string",
+    "value": "disk"
+  },
   "buffer_ms": {
     "type": "number",
     "value": 500

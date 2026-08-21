@@ -20,6 +20,7 @@
           "device_name",
           "initial_volume",
           "cache_size_mb",
+          "cache_location",
           "buffer_ms",
           "output_trim_db",
           "retain_api_key",
@@ -76,6 +77,26 @@
           "attributes": [
             {
               "min": 0
+            }
+          ]
+        },
+        {
+          "id": "cache_location",
+          "element": "select",
+          "label": "TRANSLATE.CACHE_LOCATION",
+          "doc": "TRANSLATE.CACHE_LOCATION_DOC",
+          "value": {
+            "value": "disk",
+            "label": "TRANSLATE.CACHE_LOCATION_DISK"
+          },
+          "options": [
+            {
+              "value": "disk",
+              "label": "TRANSLATE.CACHE_LOCATION_DISK"
+            },
+            {
+              "value": "ram",
+              "label": "TRANSLATE.CACHE_LOCATION_RAM"
             }
           ]
         },
