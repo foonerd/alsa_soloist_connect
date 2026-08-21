@@ -58,6 +58,9 @@ function SoloistConnect(context) {
   this.state = this.emptyState();
   this.positionAnchor = { position_ms: 0, timestamp_ms: Date.now(), speed: 0 };
   this.seekTimer = null;
+  // The last object handed to servicePushState. Core keeps it by reference as
+  // volatileState, so the seek tick writes here to be seen.
+  this.publishedState = null;
   this.pushStateTimer = null;
   this.pushStateDirty = false;
   this.volumeTimer = null;
@@ -1037,34 +1040,8 @@ SoloistConnect.prototype.currentSeekMs = function () {
   );
 };
 
-// Tick seek locally. Do not servicePushState from this timer.
-//
-// A full publish runs the state machine, volumiodiscovery, every UI, and
-// MRS "multiroomSync output update". MRS plus volumioswitch then fails
-// snd_pcm_avail(softvolume) and the DAC XRUNs — DSD and modular alike.
-// Stock spop only does `this.state.seek += 1000` here. getState() already
-// returns currentSeekMs(); real status/track changes still publish.
-SoloistConnect.prototype.syncSeekTimer = function () {
-  if (this.state.status === 'play' && this.active) {
-    if (this.seekTimer) return;
-    this.seekTimer = setInterval(() => {
-      if (this.state.status !== 'play' || !this.active) {
-        this.stopSeekTimer();
-        return;
-      }
-      this.state.seek = this.currentSeekMs();
-    }, 1000);
-    return;
-  }
-  this.stopSeekTimer();
-};
-
-SoloistConnect.prototype.stopSeekTimer = function () {
-  if (!this.seekTimer) return;
-  clearInterval(this.seekTimer);
-  this.seekTimer = null;
-};
-
+// The seek bar needs the tick, but on the published object. See
+// syncSeekTimer().
 SoloistConnect.prototype.emptyState = function () {
   return {
     status: 'stop',
@@ -1140,10 +1117,55 @@ SoloistConnect.prototype.publishState = function (state) {
   }
   this.publishing = true;
   try {
+    // Keep the object we hand over. CoreStateMachine.syncState stores it by
+    // reference as volatileState, and getState() reads seek from it on every
+    // call, so this is the object the UI is looking at until the next publish.
+    this.publishedState = state;
     this.commandRouter.servicePushState(state, this.servicename);
   } finally {
     this.publishing = false;
   }
+};
+
+// Advance the position on the object core is holding.
+//
+// The seek bar is not interpolated by the UI. volumioGetState() is
+// stateMachine.getState(), which for a volatile service returns
+// volatileState.seek: the value from the last publish. Skip forward and back
+// use the same figure as their origin, and so does a browser refresh.
+//
+// Stock spop gets away with `this.state.seek += 1000` because syncState keeps
+// the pushed object by reference and spop pushes this.state itself, so the
+// increment lands on what the UI reads. We publish a snapshot on purpose, to
+// stop core aliasing our mutable state during a nested publication, so ticking
+// this.state would write to an object core is not looking at. Tick the
+// snapshot instead.
+//
+// Never publish from here. A publish per second runs the state machine,
+// volumiodiscovery, every interface plugin and MRS's multiroom sync, and MRS
+// plus volumioswitch then fails snd_pcm_avail(softvolume) and XRUNs the DAC.
+SoloistConnect.prototype.syncSeekTimer = function () {
+  if (this.state.status === 'play' && this.active) {
+    if (this.seekTimer) return;
+    this.seekTimer = setInterval(() => {
+      if (this.state.status !== 'play' || !this.active) {
+        this.stopSeekTimer();
+        return;
+      }
+      const seek = this.currentSeekMs();
+
+      this.state.seek = seek;
+      if (this.publishedState) this.publishedState.seek = seek;
+    }, 1000);
+    return;
+  }
+  this.stopSeekTimer();
+};
+
+SoloistConnect.prototype.stopSeekTimer = function () {
+  if (!this.seekTimer) return;
+  clearInterval(this.seekTimer);
+  this.seekTimer = null;
 };
 
 SoloistConnect.prototype.pushState = function () {
@@ -1200,6 +1222,7 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.pushStateDirty = false;
   this.stopSeekTimer();
   this.state = this.emptyState();
+  this.publishedState = null;
   this.pendingMixerVolume = null;
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
