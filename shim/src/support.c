@@ -47,8 +47,13 @@ shim_api_hot(const char *fn)
         return;
     for (i = 0; i < n; i++) {
         if (seen[i] == fn) {
-            if (count[i] >= 8)
+            if (count[i] >= 8) {
+                if (count[i] == 8) {
+                    count[i]++;
+                    shim_log("%s (further calls not logged)\n", fn);
+                }
                 return;
+            }
             count[i]++;
             shim_log("%s\n", fn);
             return;

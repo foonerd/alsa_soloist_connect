@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_compile_options(-Wall -Wextra -Wno-unused-parameter -O2)
+add_compile_options(-Wall -Wextra -Werror -Wno-unused-parameter -O2)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)

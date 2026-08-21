@@ -621,12 +621,46 @@ status_running(const char *path)
 }
 
 static int
+path_join(char *dst, size_t dstsz, const char *a, const char *b)
+{
+    size_t na, nb;
+
+    if (!dst || !a || !b || dstsz == 0)
+        return -1;
+    na = strlen(a);
+    nb = strlen(b);
+    if (na + 1 + nb + 1 > dstsz)
+        return -1;
+    memcpy(dst, a, na);
+    dst[na] = '/';
+    memcpy(dst + na + 1, b, nb + 1);
+    return 0;
+}
+
+static int
+path_append(char *dst, size_t dstsz, const char *suffix)
+{
+    size_t n, ns;
+
+    if (!dst || !suffix || dstsz == 0)
+        return -1;
+    n = strlen(dst);
+    ns = strlen(suffix);
+    if (n + 1 + ns + 1 > dstsz)
+        return -1;
+    dst[n] = '/';
+    memcpy(dst + n + 1, suffix, ns + 1);
+    return 0;
+}
+
+static int
 card_loopback(const char *dir)
 {
-    char idp[320], id[64];
+    char idp[SHIM_PATH_MAX], id[64];
     FILE *f;
 
-    snprintf(idp, sizeof(idp), "%s/id", dir);
+    if (path_join(idp, sizeof(idp), dir, "id") < 0)
+        return 0;
     f = fopen(idp, "r");
     if (!f)
         return 0;
@@ -639,7 +673,7 @@ card_loopback(const char *dir)
 }
 
 struct snap {
-    char path[576];
+    char path[SHIM_PATH_MAX];
     long hw_ptr;
     long delay;
     long buffer;
@@ -650,11 +684,12 @@ struct snap {
 static int
 read_snap(const char *status, struct snap *o)
 {
-    char hw[576];
+    char hw[SHIM_PATH_MAX];
     size_t n = strlen(status);
 
     memset(o, 0, sizeof(*o));
-    if (n >= sizeof(o->path) || n < 7)
+    if (n >= sizeof(o->path) || n < 7 || n + 4 > sizeof(hw) ||
+        strcmp(status + n - 6, "status") != 0)
         return -1;
     memcpy(o->path, status, n + 1);
     memcpy(hw, status, n - 6);
@@ -689,20 +724,21 @@ scan_hw(unsigned want, struct snap *best)
         return -1;
     memset(&pick, 0, sizeof(pick));
     while ((ce = readdir(cards))) {
-        char card[320];
+        char card[SHIM_PATH_MAX];
         DIR *pcms;
         struct dirent *pe;
 
         if (strncmp(ce->d_name, "card", 4) != 0)
             continue;
-        snprintf(card, sizeof(card), "/proc/asound/%s", ce->d_name);
+        if (path_join(card, sizeof(card), "/proc/asound", ce->d_name) < 0)
+            continue;
         if (card_loopback(card))
             continue;
         pcms = opendir(card);
         if (!pcms)
             continue;
         while ((pe = readdir(pcms))) {
-            char st[576];
+            char st[SHIM_PATH_MAX];
             struct snap snap;
             size_t plen = strlen(pe->d_name);
 
@@ -710,7 +746,10 @@ scan_hw(unsigned want, struct snap *best)
                 continue;
             if (pe->d_name[plen - 1] != 'p')
                 continue;
-            snprintf(st, sizeof(st), "%s/%s/sub0/status", card, pe->d_name);
+            if (path_join(st, sizeof(st), card, pe->d_name) < 0)
+                continue;
+            if (path_append(st, sizeof(st), "sub0/status") < 0)
+                continue;
             if (read_snap(st, &snap) < 0)
                 continue;
             if (want && snap.rate && snap.rate != want)

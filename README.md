@@ -433,6 +433,7 @@ What it makes visible, none of which reaches the journal otherwise:
 | `pcm close handed off keep=` | yield or disconnect started a close worker |
 | `avail` / `writei` / `pcm prepare failed` | ALSA fault and whether prepare ran |
 | `mainloop join timed out, abandoning thread` | stop did not wait forever on `snd_pcm_close` |
+| `pa_threaded_mainloop_wait (further calls not logged)` | Soloist is in the wait loop; further wait/lock/write entry lines are suppressed after eight |
 
 The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u volumio --no-pager > /data/...` before restarting.
 

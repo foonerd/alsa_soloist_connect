@@ -56,4 +56,4 @@ Launcher names are historical (`APULSE_*`). The shim still reads them:
 | `APULSE_MAX_TLENGTH_MS` | cap on Pulse `tlength` |
 | `APULSE_EXTERNAL_VOLUME` | do not scale samples; Volumio's mixer does |
 | `APULSE_OUTPUT_TRIM_DB` | fixed stream offset before the ALSA write |
-| `APULSE_DIAG` | diagnostic lines on stderr (plugin Verbose logging) |
+| `APULSE_DIAG` | diagnostic lines on stderr (plugin Verbose logging). Hot `pa_*` entry points, including `pa_threaded_mainloop_wait`, log the first eight calls then one suppression line. |

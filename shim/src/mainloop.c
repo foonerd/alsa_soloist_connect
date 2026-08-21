@@ -510,7 +510,7 @@ SHIM_EXPORT
 void
 pa_threaded_mainloop_wait(pa_threaded_mainloop *tm)
 {
-    shim_api("pa_threaded_mainloop_wait");
+    shim_api_hot("pa_threaded_mainloop_wait");
     if (tm)
         pthread_cond_wait(&tm->cond, &tm->lock);
 }

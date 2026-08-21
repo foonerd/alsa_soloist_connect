@@ -9,6 +9,7 @@
 #define SHIM_EXPORT __attribute__((visibility("default")))
 
 #define SHIM_YIELD_DEFAULT "/data/soloist/alsa.yield"
+#define SHIM_PATH_MAX 768
 #define SHIM_IOPLUG_MAX_FRAMES 65536
 #define SHIM_CLOCK_FIT_US 100000
 #define SHIM_CLOCK_MAX_DRIFT 0.05
@@ -137,7 +138,7 @@ struct pa_stream {
     int clock_running;
     int clock_have_origin;
     int clock_have_path;
-    char clock_path[576];
+    char clock_path[SHIM_PATH_MAX];
     struct timeval clock_model_at;
     int64_t clock_model_frames;
     double clock_model_rate;
