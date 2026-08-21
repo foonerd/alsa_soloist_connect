@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the Docker build matrix that produces the native shim the plugin carries.
 
-> **Alpha, version 0.6.1.**
+> **Alpha, version 0.6.2.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -468,6 +468,48 @@ static void pa_stream_flush_impl(pa_operation *op) {
 
 so a skip discarded nothing and the already-committed audio played out. Confirmed on hardware by sampling `delay` across a skip: it never fell. The flush now drops the ring, drops and re-prepares the device, and resets the indices and the clock with it.
 
+### Recovering from an underrun
+
+An underrun on the chain used to stop playback permanently a few seconds into a track. The stream was not broken; it was waiting on a position that had stopped moving.
+
+`volumioswitch` reports it first, and that line is the only part of the sequence that reaches the journal without diagnostics enabled:
+
+```
+pcm_volumioswitch.c:912 PCM volumioMultiRoomServer cannot write to target PCM
+softvolume as it has failed its update check
+```
+
+That is `snd_pcm_avail` on its target returning a negative errno, which the plugin turns into `-EPIPE` upward. Neither of its two `snd_pcm_prepare(target)` calls is on the advance path, so recovery is the client's job. apulse recovers and the PCM comes back, which is why nothing looked wrong.
+
+The damage is to the clock. `read_index` is the byte position of the DAC and comes only from `hw_ptr` in `/proc/asound`, which `read_hw_pcm_snap` refuses to read unless the PCM is RUNNING. An underrun is precisely not running, so the read fails, the cached path is dropped, the rescan fails on every candidate for the same reason, and the held position is returned. The one-shot `play_clock: no hardware hw_ptr found` line has already been spent at connect, so none of this is announced.
+
+From there it sustains itself. `read_index` stops while `write_index` continues, so the fill level reaches `tlength`; `pa_stream_writable_size` is bounded by `tlength - fill` and reaches zero; the client stops writing; with nothing to write the switch never reaches its `snd_pcm_start` on the target, so the hardware never returns to RUNNING to unfreeze the clock.
+
+Captured with `APULSE_DIAG=1`: `r` frozen at 1423672 while `w` ran on to 1531904, fill 108232 against a `tlength` of 105840, `wr=0` and `cbytes=0` for the remaining twenty seconds, `avail` sitting at the full 16384 frames.
+
+The fix is two things that must move together. The audio ALSA held at the underrun is gone, so `read_index` becomes `write_index` less what is still queued in our own ring and was never offered. And the clock is **held** at that same position rather than reset, using the mechanism a Volumio yield already uses: the origin is rebuilt from the frozen microsecond value on the first RUNNING sample.
+
+Resetting it instead was tried, and it was worse than the original fault. `stream_clock_reset` means the audio is gone and the playhead restarts at zero, which is why all four of its other callers zero both indices alongside it. Leaving `write_index` running while zeroing the playhead means the resume branch never fires, the position counts up from zero again, and the monotonic guard pins `read_index` at the jumped value for the rest of the track. Measured: `read_index` advanced only at underruns, in exact steps of one `tlength`, ninety-four times in a single session. The stream was progressing solely by underrunning, which is continuous dropouts instead of one stop.
+
+What triggers the first underrun is still open. Before it, the fill level collapses to zero with a 95 ms gap in the client's write cadence while the ALSA buffer is 371 ms deep. This work makes the recovery correct; it does not explain the starvation.
+
+### Reading a playback fault
+
+Every diagnostic in the shim is behind `APULSE_DIAG`, and `diag_on()` reads it once, so the shipped build costs nothing when it is unset. The plugin's **Verbose logging** switch sets it, via `VERBOSE_LOGGING` in the env file and `launch-soloist.sh`. The startup line reports `diag=1` or `diag=off` so a capture states its own provenance.
+
+What it makes visible, none of which reaches the journal otherwise:
+
+| Line | What it answers |
+|---|---|
+| `1s wake= wr= short= err= xrun= pad=` | whether the write loop is healthy, starving, or spinning |
+| `1s api reads= updates= wsize= writes= gap` | what the client is actually doing, and whether it is being told there is no room |
+| `timing[get\|upd] w= r= fill=` | the entire timing contract handed to Soloist, which is the only thing it reads |
+| `xrun recovered: read_index N -> M` | an underrun happened and was accounted for |
+| `pcm unrecovered (N), reopening` | recovery failed and the device is being closed and reopened |
+| `connect / release / reacquire` | device lifecycle and the parameters actually negotiated |
+
+The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u volumio --no-pager > /data/...` before restarting.
+
 ---
 
 ## Known limitations
@@ -479,6 +521,8 @@ so a skip discarded nothing and the already-committed audio played out. Confirme
 - **PeppyMeter metering.** When the screensaver's Spotify metering is on, the daemon plays through `plug:spotify`, PeppyMeter's metered entry at contribution priority 5, so its VU meters respond to Spotify. Contributions above that point are skipped: FusionDSP at 10 and Stylish Player at 7. PeppyMeter already forces its Spotify toggle off when DSP is on. See [PeppyMeter integration](#peppymeter-integration).
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
 - **arm64 is unverified at runtime.** Built by the matrix and carries the same commits, but only armhf and amd64 have been exercised.
+- **The RAM cache is untested at its limit.** Selecting RAM mounts a tmpfs over `/data/soloist/cache`, sized at a quarter of `MemTotal` and capped by the Cache size setting. Whether the daemon evicts or aborts when that filesystem fills has not been observed, because no session has yet reached the ceiling.
+- **The first underrun is unexplained.** Recovery from one is now correct, but the fill level collapsing to zero in the first place is not accounted for. See [Recovering from an underrun](#recovering-from-an-underrun).
 - armv6 devices are out of scope.
 
 ---

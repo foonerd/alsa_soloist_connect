@@ -56,14 +56,14 @@ if `ldd` shows anything other than `libasound` and the base libc family.
 ## Source
 
 [foonerd/apulse](https://github.com/foonerd/apulse) at
-`112ef02300c10f40daf63b2d5ebfeb710dcec6e2`.
+`47d9f125c40c89b154811246d8b62f87c95be737`.
 
 That is a fork of [i-rinat/apulse](https://github.com/i-rinat/apulse) at
 `5d654cecd18474b4e0d885e774bc41fcbbc9818b`, with the Volumio changes as commits
 on `master`. Upstream is unchanged and still reachable:
 
 ```
-git log --oneline 5d654ce..112ef02
+git log --oneline 5d654ce..47d9f12
 ```
 
 shows exactly what was added, and each commit carries its evidence in its
@@ -80,14 +80,20 @@ that discarded nothing alongside an io callback that spun on a level-triggered
 `POLLOUT`, and a `read_index` that collapsed to zero whenever the clock stopped.
 `git format-patch 5d654ce..HEAD` produces those for submission.
 
-The repository and commit are pinned in `docker/run-docker-apulse.sh`, which
-passes both into the container, and mirrored as fallbacks in
-`scripts/build-apulse.sh`. Keep the two in agreement: when only the build script
-was updated to point at the fork, the runner's values won and a build produced
-stock upstream while every gate passed.
+The repository and commit are pinned in `docker/run-docker-apulse.sh`, and only
+there. `scripts/build-apulse.sh` has no fallback and aborts if either is unset.
+They were duplicated once, as fallbacks in the build script; only one copy was
+updated, the runner's value won, and a build produced stock upstream while every
+gate passed, because each of those compares the build to itself.
 
 The build refuses to proceed if the checked-out tree has no commits on top of
 `5d654ce`, which is what caught that.
+
+The revision that produced each shipped payload is recorded in
+`SOURCE_REVISION` beside the libraries. It must match `APULSE_REF`, and the two
+move in the same commit: `install.sh` copies `alsa-lib/<arch>` as it stands, so
+a commit that changed one alone would leave the tree naming one shim and
+shipping another.
 
 Override for testing:
 

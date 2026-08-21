@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.6.1.**
+> **Alpha, version 0.6.2.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -48,9 +48,10 @@ It belongs to the account that generated it and must not be shared.
 | Device name | `Volumio` | The name shown in the Spotify app. |
 | Initial volume | 50 | 0 to 100. |
 | Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
+| Cache location | Disk | Where downloaded audio is kept. **Disk** puts it on the data partition, where it survives a reboot. **RAM** keeps it in memory, which takes cache writes off a slow SD card, but costs that much memory and is emptied on every reboot and plugin restart. A lossless track is roughly 44 MB. Only worth choosing on a board with memory to spare; on a 512 MB board such as a Pi Zero 2 W it is a large share of the total, and the size is capped accordingly. |
 | Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
 | Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
-| Verbose logging | off | Logs every event Spotify sends the device to the Volumio log. Useful when reporting a problem; leave it off otherwise. |
+| Verbose logging | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Useful when reporting a problem; noisy, so leave it off otherwise. It changes no playback behaviour. |
 
 The settings page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
 
@@ -132,6 +133,9 @@ At lossless the plugin buffers half a second of audio before the DAC, which is w
 **The Soloist binary is not part of this package.**
 It is downloaded from Spotify's official CDN during install, because Spotify does not permit redistributing it.
 
+**A RAM cache is emptied on every restart.**
+That is what it is: memory, not storage. Saving settings restarts the daemon, so the cache is discarded then too, and the next track is downloaded again. It is worth choosing when the boot medium is slow, not otherwise.
+
 ---
 
 ## Troubleshooting
@@ -146,6 +150,18 @@ Check the plugin:
 
 ```
 journalctl -u volumio -f | grep -i soloist
+```
+
+Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line states which mode it is in:
+
+```
+SoloistConnect: userspace=armhf device=plug:volumio ... diag=1
+```
+
+The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:
+
+```
+journalctl -b -u soloist -u volumio --no-pager > /data/soloist-report.txt
 ```
 
 Confirm the ALSA device exists:
