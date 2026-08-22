@@ -123,7 +123,8 @@ struct pa_stream {
     size_t rs_buf_frames;
     unsigned write_rate;
     uint64_t pace_frames;
-    int64_t pace_ns;
+    int64_t pace_t0_ns;
+    int pace_armed;
     int pace_done;
     snd_pcm_format_t dev_fmt;
     size_t dev_frame_size;

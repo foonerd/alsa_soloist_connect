@@ -21,7 +21,8 @@ static int stream_open_pcm(pa_stream *s);
 static void pace_restart(pa_stream *s);
 static void pace_clear(pa_stream *s);
 static int pace_set_write_rate(pa_stream *s, unsigned rate);
-static void pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t ns);
+static int64_t mono_ns(void);
+static void pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t now_ns);
 static int ensure_rs_buf(pa_stream *s, size_t frames);
 
 static void
@@ -324,9 +325,6 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         snd_pcm_uframes_t in_frames = got / fs;
         const float *fsrc = (const float *)s->io_buf;
         const void *out = s->io_buf;
-        struct timespec t0, t1;
-        int64_t ns;
-
         out_frames = in_frames;
         in_used = in_frames;
         {
@@ -362,13 +360,9 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
             pack_dev(s->cvt_buf, fsrc, out_frames, s->ss.channels, s->dev_fmt);
             out = s->cvt_buf;
         }
-        clock_gettime(CLOCK_MONOTONIC, &t0);
         wr = snd_pcm_writei(s->pcm, out, out_frames);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        ns = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
-             (t1.tv_nsec - t0.tv_nsec);
         if (wr > 0)
-            pace_note(s, wr, ns);
+            pace_note(s, wr, mono_ns());
     }
     if (wr < 0 && wr != -EAGAIN) {
         shim_log("writei %s, avail=%ld\n", snd_strerror((int)wr), (long)avail);
@@ -563,11 +557,21 @@ fail:
     return -1;
 }
 
+static int64_t
+mono_ns(void)
+{
+    struct timespec t;
+
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
 static void
 pace_restart(pa_stream *s)
 {
     s->pace_frames = 0;
-    s->pace_ns = 0;
+    s->pace_t0_ns = 0;
+    s->pace_armed = 0;
     s->pace_done = 0;
 }
 
@@ -621,34 +625,43 @@ pace_set_write_rate(pa_stream *s, unsigned rate)
 }
 
 static void
-pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t ns)
+pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t now_ns)
 {
     double hz;
     unsigned snap;
+    int64_t ns;
 
-    if (wr <= 0 || ns < 2000000LL)
+    if (s->pace_done || wr <= 0 || now_ns <= 0)
+        return;
+    if (!s->pace_armed) {
+        s->pace_t0_ns = now_ns;
+        s->pace_armed = 1;
+        return;
+    }
+    ns = now_ns - s->pace_t0_ns;
+    if (ns <= 0)
         return;
     s->pace_frames += (uint64_t)wr;
-    s->pace_ns += ns;
-    if (s->pace_ns < 80000000LL)
+    if (ns < 80000000LL)
         return;
-    hz = (double)s->pace_frames * 1e9 / (double)s->pace_ns;
+    hz = (double)s->pace_frames * 1e9 / (double)ns;
     snap = shim_snap_rate(hz);
     s->pace_frames = 0;
-    s->pace_ns = 0;
+    s->pace_t0_ns = now_ns;
     if (!snap) {
         shim_log("pace measured=%.0f snap=0 keep=%u\n", hz, s->write_rate);
         return;
     }
+    s->pace_done = 1;
     if (snap == s->write_rate) {
-        s->pace_done = 1;
+        shim_log("pace measured=%.0f snap=%u keep\n", hz, snap);
         return;
     }
     if (pace_set_write_rate(s, snap) < 0) {
+        s->pace_done = 0;
         shim_log("pace measured=%.0f snap=%u convert failed\n", hz, snap);
         return;
     }
-    s->pace_done = 1;
     shim_log("pace measured=%.0f snap=%u client=%u\n", hz, snap, s->ss.rate);
 }
 
