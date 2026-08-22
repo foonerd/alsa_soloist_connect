@@ -41,6 +41,14 @@ ring_free(struct ring *r)
     free(r);
 }
 
+size_t
+ring_capacity(struct ring *r)
+{
+    if (!r || !r->buf)
+        return 0;
+    return (size_t)(r->end - r->buf);
+}
+
 static size_t
 readable_unlocked(struct ring *r)
 {

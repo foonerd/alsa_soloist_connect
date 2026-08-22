@@ -1,4 +1,4 @@
-# Pulse shim 0.2.4
+# Pulse shim 0.2.5
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
@@ -14,7 +14,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.2.4. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.5. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -47,6 +47,8 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole
   buffer. Soloist always writes 32 KiB and will not uncork if that call
   fails, so rejecting a short write deadlocks preroll (0.2.1 on hanger).
+  The ring is `tlength` plus 64 KiB so a default 500 ms cap does not
+  drop the tail of that write (0.2.4 on Rivo/Integro).
 - On the first `pa_*` call, `--api-key` on argv is overwritten with
   `nice-try-logsubmit` so `ps` and logsubmit do not publish the secret.
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
