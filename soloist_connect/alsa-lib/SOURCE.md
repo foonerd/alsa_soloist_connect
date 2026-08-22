@@ -1,4 +1,4 @@
-# Pulse shim 0.3.0 (Soloist → ALSA)
+# Pulse shim 0.3.1 (Soloist → ALSA)
 
 Purpose-driven `libpulse.so.0`. Soloist dlopens this name. The library
 implements the 47 `pa_*` symbols that binary looks up (see `shim/ABI.txt`)
@@ -6,7 +6,7 @@ and writes the first of `S24_3LE`, `S24_LE`, `S16_LE` that the chain
 accepts (else FLOAT32) into `plug:volumio`. It is not apulse and not a Pulse
 server.
 
-Library version is **0.3.0** (`shim/CMakeLists.txt`). There is no tag pin:
+Library version is **0.3.1** (`shim/CMakeLists.txt`). There is no tag pin:
 the source is `shim/` in this repository.
 
 ## Layout
