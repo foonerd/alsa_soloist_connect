@@ -37,8 +37,8 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 
 - Client FLOAT32 stays in the ring. The PCM is opened as the first of
   `S24_3LE`, `S24_LE`, `S16_LE` that `plug:volumio` accepts, else FLOAT32.
-  One convert on `writei`. Exact rate with resample off; near+resample only
-  if that fails. Softvolume can still gain. Bit-perfect is not possible.
+  One convert on `writei`. Rate is `set_rate_near` with resample on.
+  Softvolume can still gain. Bit-perfect is not possible.
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
   `snd_pcm_hw_params_set_period_size_near`.
 - Cork keeps the PCM. Close only when the yield file appears or the stream

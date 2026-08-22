@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.4.**
+> **Alpha, version 0.6.5.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -121,7 +121,7 @@ The build images carry `libasound2-dev` and a toolchain, and nothing else. glib 
 
 The contract is in [`shim/src/stream.c`](shim/src/stream.c). A longer note is in [`shim/README.md`](shim/README.md).
 
-**One convert into `plug:volumio`.** Soloist decodes every quality to FLOAT32. The ring stays that format. The PCM is opened as the first of `S24_3LE`, `S24_LE`, `S16_LE` that the chain accepts (else FLOAT32). Exact rate with resample off; `near` and resample only if that fails. Softvolume can still gain. Bit-perfect is not possible on this chain.
+**One convert into `plug:volumio`.** Soloist decodes every quality to FLOAT32. The ring stays that format. The PCM is opened as the first of `S24_3LE`, `S24_LE`, `S16_LE` that the chain accepts (else FLOAT32). Rate uses `set_rate_near` with resample on: a no-op when the slave matches, a convert when it does not. Softvolume can still gain. Bit-perfect is not possible on this chain.
 
 **Pulse parameters pace the client, not the device.** `tlength` (capped by `APULSE_MAX_TLENGTH_MS`) and `minreq` are the Pulse buffer target and write quantum. The ALSA period is `snd_pcm_hw_params_set_period_size_near`. Deriving the period from `minreq` as frames produced ~882 and coupled the Output Buffer slider to the IRQ size; testers changing the slider could not uncouple them.
 

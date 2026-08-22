@@ -412,14 +412,10 @@ stream_open_pcm(pa_stream *s)
     if (snd_pcm_hw_params_set_channels(s->pcm, hw, s->ss.channels) < 0)
         goto fail;
     rate = s->ss.rate;
-    resample = 0;
-    snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 0);
-    if (snd_pcm_hw_params_set_rate(s->pcm, hw, rate, 0) < 0) {
-        resample = 1;
-        snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
-        if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &rate, &dir) < 0)
-            goto fail;
-    }
+    resample = 1;
+    snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
+    if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &rate, &dir) < 0)
+        goto fail;
     if (fs)
         want_p = s->attr.minreq / fs;
     if (pick_period(s->pcm, hw, want_p, &period) < 0)
