@@ -1,11 +1,12 @@
-# Pulse shim 0.2.3
+# Pulse shim 0.2.4
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
 Soloist has no ALSA backend. It `dlopen`s this name and looks up the 47
 `pa_*` symbols in [ABI.txt](ABI.txt). This library implements those symbols
-and writes integer PCM (S16, then S32, never packed S24) into
-`plug:volumio`. It is not apulse, not a Pulse server, and not a general
+and writes the client format (FLOAT32) into `plug:volumio`. The outer
+`plug:` converts to whatever the slave opens. It is not apulse, not a
+Pulse server, and not a general
 PulseAudio replacement.
 
 Runtime link is `libasound` and libc only. `libpulse-simple` and
@@ -13,7 +14,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.2.3. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.4. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -35,10 +36,12 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 
 ## Playback contract
 
-- Convert client FLOAT32 to S16_LE (then S32_LE) in the shim and write
-  that. `pcm.softvolume` is not assumed to exist; Rivo's chain has no
-  softvolume. Packed S24_3LE is never opened: plug accepts it and
-  volumioswitch then dies. Bit-perfect is not possible.
+- writei the client spec (FLOAT32 at the client rate). Do not pick S16
+  or S32: on volumioswitch that becomes the USB/AML open and rushes.
+  The `plug:` in `plug:volumio` is the converter. Exact rate or fail;
+  never `set_rate_near` onto 48 k / 88.2 k. I/O is capped at two
+  periods so switcher `avail` is not treated as the DAC. Packed
+  S24_3LE is never the client format. Bit-perfect is not possible.
 - Played time is `write_index` minus ring fill minus `snd_pcm_delay` on
   the PCM we opened. `/proc/asound` is not scanned for some other card.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole

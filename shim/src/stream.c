@@ -67,43 +67,25 @@ client_format(pa_sample_format_t f)
     }
 }
 
-/* Packed S24_3LE is accepted by plug:volumio and then kills volumioswitch.
- * S16 is what MPD already sends through the same switcher. S32 is what a
- * USB DAC often wants. Client FLOAT32 is last: hanger with softvolume can
- * convert it, Rivo without softvolume cannot be assumed to. */
+/*
+ * Application format is what we writei. That is the client spec, always.
+ *
+ * plug:volumio is a converter (or a converter in front of volumioswitch).
+ * Setting S16/S32 here does not "help" a device without softvolume: on an
+ * ioplug with format_append it becomes the format the USB/AML slave opens,
+ * which is how 0.2.1 packed a 32-bit slot device as S16 and rushed.
+ * Packed S24_3LE is never the client format, so it is never opened.
+ */
 static int
-pick_alsa_format(snd_pcm_t *pcm, snd_pcm_hw_params_t *hw,
-                 pa_sample_format_t client, snd_pcm_format_t *out)
+set_app_format(snd_pcm_t *pcm, snd_pcm_hw_params_t *hw,
+               pa_sample_format_t client, snd_pcm_format_t *out)
 {
-    static const snd_pcm_format_t prefer[] = {
-        SND_PCM_FORMAT_S16_LE,
-        SND_PCM_FORMAT_S32_LE,
-    };
-    snd_pcm_hw_params_t *tmp;
-    snd_pcm_format_t client_fmt = client_format(client);
-    size_t i;
+    snd_pcm_format_t fmt = client_format(client);
 
-    if (snd_pcm_hw_params_malloc(&tmp) < 0)
+    if (snd_pcm_hw_params_set_format(pcm, hw, fmt) < 0)
         return -1;
-    for (i = 0; i < sizeof(prefer) / sizeof(prefer[0]); i++) {
-        snd_pcm_hw_params_copy(tmp, hw);
-        if (snd_pcm_hw_params_set_format(pcm, tmp, prefer[i]) == 0) {
-            if (snd_pcm_hw_params_set_format(pcm, hw, prefer[i]) == 0) {
-                *out = prefer[i];
-                snd_pcm_hw_params_free(tmp);
-                return 0;
-            }
-        }
-    }
-    snd_pcm_hw_params_copy(tmp, hw);
-    if (snd_pcm_hw_params_set_format(pcm, tmp, client_fmt) == 0 &&
-        snd_pcm_hw_params_set_format(pcm, hw, client_fmt) == 0) {
-        *out = client_fmt;
-        snd_pcm_hw_params_free(tmp);
-        return 0;
-    }
-    snd_pcm_hw_params_free(tmp);
-    return -1;
+    *out = fmt;
+    return 0;
 }
 
 static int
@@ -239,6 +221,14 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         if (avail <= 0)
             return;
     }
+    /*
+     * volumioswitch avail is local + target and can be a second or more.
+     * Writing that in one wakeup is a USB/AML fill, not the DAC clock.
+     * Cap to two periods. That is ALSA I/O, not pace matching.
+     */
+    if (snd_pcm_state(s->pcm) == SND_PCM_STATE_RUNNING && s->period &&
+        avail > (snd_pcm_sframes_t)(s->period * 2))
+        avail = (snd_pcm_sframes_t)(s->period * 2);
     nbytes = (size_t)avail * fs;
     if (nbytes > s->io_buf_bytes)
         nbytes = s->io_buf_bytes;
@@ -350,15 +340,28 @@ stream_open_pcm(pa_stream *s)
     snd_pcm_hw_params_malloc(&hw);
     snd_pcm_hw_params_any(s->pcm, hw);
     snd_pcm_hw_params_set_access(s->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
-    if (pick_alsa_format(s->pcm, hw, s->ss.format, &s->alsa_fmt) < 0)
+    if (set_app_format(s->pcm, hw, s->ss.format, &s->alsa_fmt) < 0)
         goto fail;
     s->alsa_fs = shim_alsa_frame_size(s->alsa_fmt, s->ss.channels);
     if (s->alsa_fs == 0)
         goto fail;
+    /* Application rate is the client's. The outer plug resamples to the slave.
+     * set_rate_near on an ioplug can snap 44.1 to 48 or 88.2 and play fast.
+     * If the exact rate is refused, fail: do not write 44.1 frames at 48 k. */
     snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
     rate = s->ss.rate;
-    if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &rate, &dir) < 0)
-        goto fail;
+    if (snd_pcm_hw_params_set_rate(s->pcm, hw, rate, 0) < 0) {
+        unsigned near = rate;
+
+        dir = 0;
+        if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &near, &dir) < 0)
+            goto fail;
+        if (near != s->ss.rate) {
+            shim_log("pcm rate %u refused (near=%u)\n", s->ss.rate, near);
+            goto fail;
+        }
+        rate = near;
+    }
     if (snd_pcm_hw_params_set_channels(s->pcm, hw, s->ss.channels) < 0)
         goto fail;
     if (fs)
