@@ -4,8 +4,9 @@ Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
 Soloist has no ALSA backend. It `dlopen`s this name and looks up the 47
 `pa_*` symbols in [ABI.txt](ABI.txt). This library implements those symbols
-and writes the client's FLOAT32 into `plug:volumio`. It is not apulse, not
-a Pulse server, and not a general PulseAudio replacement.
+and converts the client's FLOAT32 into the device format on `plug:volumio`.
+It is not apulse, not a Pulse server, and not a general PulseAudio
+replacement.
 
 Runtime link is `libasound` and libc only. `libpulse-simple` and
 `libpulse-mainloop-glib` are not built.
@@ -34,8 +35,10 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 
 ## Playback contract
 
-- Identity `snd_pcm_writei` of client FLOAT32 into `plug:volumio`. AAMPP
-  converts to `S24_3LE` at `pcm.softvolume`. Bit-perfect is not possible.
+- Client FLOAT32 stays in the ring. The PCM is opened as the first of
+  `S24_3LE`, `S24_LE`, `S16_LE` that `plug:volumio` accepts, else FLOAT32.
+  One convert on `writei`. Exact rate with resample off; near+resample only
+  if that fails. Softvolume can still gain. Bit-perfect is not possible.
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
   `snd_pcm_hw_params_set_period_size_near`.
 - Cork keeps the PCM. Close only when the yield file appears or the stream

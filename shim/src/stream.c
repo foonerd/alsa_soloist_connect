@@ -48,25 +48,93 @@ adjust_attr(pa_stream *s, const pa_buffer_attr *in)
         a->prebuf = a->tlength - a->minreq;
 }
 
-static snd_pcm_format_t
-client_format(pa_sample_format_t f)
+static const snd_pcm_format_t k_dev_fmts[] = {
+    SND_PCM_FORMAT_S24_3LE,
+    SND_PCM_FORMAT_S24_LE,
+    SND_PCM_FORMAT_S16_LE,
+    SND_PCM_FORMAT_FLOAT_LE,
+};
+
+static int
+pick_dev_fmt(snd_pcm_t *pcm, snd_pcm_hw_params_t *hw, snd_pcm_format_t *out)
 {
-    switch (f) {
-    case PA_SAMPLE_S16LE:
-        return SND_PCM_FORMAT_S16_LE;
-    case PA_SAMPLE_S16BE:
-        return SND_PCM_FORMAT_S16_BE;
-    case PA_SAMPLE_FLOAT32LE:
-        return SND_PCM_FORMAT_FLOAT_LE;
-    case PA_SAMPLE_FLOAT32BE:
-        return SND_PCM_FORMAT_FLOAT_BE;
-    case PA_SAMPLE_S32LE:
-        return SND_PCM_FORMAT_S32_LE;
-    case PA_SAMPLE_S24_32LE:
-        return SND_PCM_FORMAT_S24_LE;
-    default:
-        return SND_PCM_FORMAT_FLOAT_LE;
+    size_t i;
+
+    for (i = 0; i < sizeof(k_dev_fmts) / sizeof(k_dev_fmts[0]); i++) {
+        if (snd_pcm_hw_params_test_format(pcm, hw, k_dev_fmts[i]) != 0)
+            continue;
+        if (snd_pcm_hw_params_set_format(pcm, hw, k_dev_fmts[i]) < 0)
+            continue;
+        *out = k_dev_fmts[i];
+        return 0;
     }
+    return -1;
+}
+
+static int32_t
+float_to_s24(float x)
+{
+    if (x > 1.f)
+        x = 1.f;
+    if (x < -1.f)
+        x = -1.f;
+    return (int32_t)lrintf(x * 8388607.f);
+}
+
+static int16_t
+float_to_s16(float x)
+{
+    if (x > 1.f)
+        x = 1.f;
+    if (x < -1.f)
+        x = -1.f;
+    return (int16_t)lrintf(x * 32767.f);
+}
+
+static void
+pack_dev(void *dst, const void *src, size_t frames, unsigned ch,
+         snd_pcm_format_t fmt)
+{
+    const float *in = src;
+    size_t i, n = frames * ch;
+
+    if (fmt == SND_PCM_FORMAT_S24_3LE) {
+        uint8_t *p = dst;
+
+        for (i = 0; i < n; i++) {
+            int32_t v = float_to_s24(in[i]);
+
+            p[0] = (uint8_t)v;
+            p[1] = (uint8_t)(v >> 8);
+            p[2] = (uint8_t)(v >> 16);
+            p += 3;
+        }
+        return;
+    }
+    if (fmt == SND_PCM_FORMAT_S24_LE) {
+        int32_t *p = dst;
+
+        for (i = 0; i < n; i++)
+            p[i] = float_to_s24(in[i]);
+        return;
+    }
+    if (fmt == SND_PCM_FORMAT_S16_LE) {
+        int16_t *p = dst;
+
+        for (i = 0; i < n; i++)
+            p[i] = float_to_s16(in[i]);
+    }
+}
+
+static void
+stream_free_io_bufs(pa_stream *s)
+{
+    free(s->io_buf);
+    s->io_buf = NULL;
+    s->io_buf_bytes = 0;
+    free(s->cvt_buf);
+    s->cvt_buf = NULL;
+    s->cvt_buf_bytes = 0;
 }
 
 static int
@@ -206,6 +274,12 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     if (nbytes > s->io_buf_bytes)
         nbytes = s->io_buf_bytes;
     avail = (snd_pcm_sframes_t)(nbytes / fs);
+    if (s->dev_frame_size && s->cvt_buf_bytes) {
+        size_t mf = s->cvt_buf_bytes / s->dev_frame_size;
+
+        if ((size_t)avail > mf)
+            avail = (snd_pcm_sframes_t)mf;
+    }
     if (avail <= 0)
         return;
 
@@ -214,10 +288,13 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         return;
 
     if (paused) {
+        size_t dfs = s->dev_frame_size ? s->dev_frame_size : fs;
+        void *zbuf = s->cvt_buf ? s->cvt_buf : s->io_buf;
+
         if (snd_pcm_state(s->pcm) != SND_PCM_STATE_RUNNING)
             return;
-        memset(s->io_buf, 0, (size_t)avail * fs);
-        wr = snd_pcm_writei(s->pcm, s->io_buf, (snd_pcm_uframes_t)avail);
+        memset(zbuf, 0, (size_t)avail * dfs);
+        wr = snd_pcm_writei(s->pcm, zbuf, (snd_pcm_uframes_t)avail);
         if (wr < 0 && wr != -EAGAIN)
             stream_prepare(s);
         return;
@@ -231,7 +308,19 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     got = (got / fs) * fs;
     shim_apply_volume(s->io_buf, got, s->volume, &s->ss);
     shim_apply_trim(s->io_buf, got, &s->ss);
-    wr = snd_pcm_writei(s->pcm, s->io_buf, got / fs);
+    {
+        snd_pcm_uframes_t frames = got / fs;
+        const void *out = s->io_buf;
+
+        if (s->dev_fmt != SND_PCM_FORMAT_FLOAT_LE &&
+            s->dev_fmt != SND_PCM_FORMAT_FLOAT_BE) {
+            if (!s->cvt_buf || !s->dev_frame_size)
+                return;
+            pack_dev(s->cvt_buf, s->io_buf, frames, s->ss.channels, s->dev_fmt);
+            out = s->cvt_buf;
+        }
+        wr = snd_pcm_writei(s->pcm, out, frames);
+    }
     if (wr < 0 && wr != -EAGAIN) {
         shim_log("writei %s, avail=%ld\n", snd_strerror((int)wr), (long)avail);
         stream_prepare(s);
@@ -290,7 +379,7 @@ stream_open_pcm(pa_stream *s)
     snd_pcm_sw_params_t *sw;
     snd_pcm_uframes_t period = 0, buffer = 0, want_p = 0, want_b = 0;
     unsigned rate;
-    int err, dir = 0, nfds, k;
+    int err, dir = 0, nfds, k, resample = 0;
     size_t fs = shim_frame_size(&s->ss);
     struct pollfd *fds;
     const char *dev = shim_playback_device();
@@ -311,15 +400,26 @@ stream_open_pcm(pa_stream *s)
     snd_pcm_hw_params_malloc(&hw);
     snd_pcm_hw_params_any(s->pcm, hw);
     snd_pcm_hw_params_set_access(s->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
-    err = snd_pcm_hw_params_set_format(s->pcm, hw, client_format(s->ss.format));
-    if (err < 0)
+    if (pick_dev_fmt(s->pcm, hw, &s->dev_fmt) < 0)
         goto fail;
-    snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
-    rate = s->ss.rate;
-    if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &rate, &dir) < 0)
-        goto fail;
+    {
+        int bits = snd_pcm_format_physical_width(s->dev_fmt);
+
+        if (bits <= 0)
+            goto fail;
+        s->dev_frame_size = (size_t)(bits / 8) * s->ss.channels;
+    }
     if (snd_pcm_hw_params_set_channels(s->pcm, hw, s->ss.channels) < 0)
         goto fail;
+    rate = s->ss.rate;
+    resample = 0;
+    snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 0);
+    if (snd_pcm_hw_params_set_rate(s->pcm, hw, rate, 0) < 0) {
+        resample = 1;
+        snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
+        if (snd_pcm_hw_params_set_rate_near(s->pcm, hw, &rate, &dir) < 0)
+            goto fail;
+    }
     if (fs)
         want_p = s->attr.minreq / fs;
     if (pick_period(s->pcm, hw, want_p, &period) < 0)
@@ -340,13 +440,22 @@ stream_open_pcm(pa_stream *s)
     hw = NULL;
 
     s->period = period;
+    stream_free_io_bufs(s);
     s->io_buf_bytes = (size_t)period * 4 * fs;
     if (s->io_buf_bytes < fs)
         s->io_buf_bytes = fs * 4;
-    free(s->io_buf);
     s->io_buf = malloc(s->io_buf_bytes);
     if (!s->io_buf)
         goto fail;
+    if (s->dev_fmt != SND_PCM_FORMAT_FLOAT_LE &&
+        s->dev_fmt != SND_PCM_FORMAT_FLOAT_BE && s->dev_frame_size) {
+        s->cvt_buf_bytes = (size_t)period * 4 * s->dev_frame_size;
+        if (s->cvt_buf_bytes < s->dev_frame_size)
+            s->cvt_buf_bytes = s->dev_frame_size * 4;
+        s->cvt_buf = malloc(s->cvt_buf_bytes);
+        if (!s->cvt_buf)
+            goto fail;
+    }
 
     snd_pcm_sw_params_malloc(&sw);
     snd_pcm_sw_params_current(s->pcm, sw);
@@ -377,14 +486,15 @@ stream_open_pcm(pa_stream *s)
     if (s->ss.rate)
         s->configured_sink_usec =
             (pa_usec_t)((uint64_t)buffer * 1000000ULL / s->ss.rate);
-    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%d\n", dev,
-             (unsigned long)period, (unsigned long)buffer, rate,
-             (int)s->ss.format);
+    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%s resample=%d\n",
+             dev, (unsigned long)period, (unsigned long)buffer, rate,
+             snd_pcm_format_name(s->dev_fmt), resample);
     return 0;
 
 fail:
     if (hw)
         snd_pcm_hw_params_free(hw);
+    stream_free_io_bufs(s);
     if (s->pcm) {
         stream_abandon_pcm(s->pcm);
         s->pcm = NULL;
@@ -416,9 +526,7 @@ stream_close_pcm(pa_stream *s, int keep_position)
         s->pcm = NULL;
         shim_log("pcm close handed off keep=%d\n", keep_position);
     }
-    free(s->io_buf);
-    s->io_buf = NULL;
-    s->io_buf_bytes = 0;
+    stream_free_io_bufs(s);
     if (s->rb)
         ring_drop(s->rb, ring_readable(s->rb));
     if (keep_position)
@@ -1273,6 +1381,6 @@ pa_stream_unref(pa_stream *s)
     shim_context_remove_stream(s->c, s);
     pa_context_unref(s->c);
     ring_free(s->rb);
-    free(s->io_buf);
+    stream_free_io_bufs(s);
     free(s);
 }

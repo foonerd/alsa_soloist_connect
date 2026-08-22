@@ -116,6 +116,10 @@ struct pa_stream {
     struct ring *rb;
     char *io_buf;
     size_t io_buf_bytes;
+    void *cvt_buf;
+    size_t cvt_buf_bytes;
+    snd_pcm_format_t dev_fmt;
+    size_t dev_frame_size;
     snd_pcm_uframes_t period;
     pa_io_event **ioe;
     int nioe;
