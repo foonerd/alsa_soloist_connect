@@ -1,18 +1,19 @@
-# Pulse shim 0.2.0
+# Pulse shim 0.2.1
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
 Soloist has no ALSA backend. It `dlopen`s this name and looks up the 47
 `pa_*` symbols in [ABI.txt](ABI.txt). This library implements those symbols
-and writes the client's FLOAT32 into `plug:volumio`. It is not apulse, not
-a Pulse server, and not a general PulseAudio replacement.
+and writes integer PCM (S16, then S32, never packed S24) into
+`plug:volumio`. It is not apulse, not a Pulse server, and not a general
+PulseAudio replacement.
 
 Runtime link is `libasound` and libc only. `libpulse-simple` and
 `libpulse-mainloop-glib` are not built.
 
 ## Version
 
-CMake `VERSION` is 0.2.0. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.1. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -34,8 +35,14 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 
 ## Playback contract
 
-- Identity `snd_pcm_writei` of client FLOAT32 into `plug:volumio`. AAMPP
-  converts to `S24_3LE` at `pcm.softvolume`. Bit-perfect is not possible.
+- Convert client FLOAT32 to S16_LE (then S32_LE) in the shim and write
+  that. `pcm.softvolume` is not assumed to exist; Rivo's chain has no
+  softvolume. Packed S24_3LE is never opened: plug accepts it and
+  volumioswitch then dies. Bit-perfect is not possible.
+- Played time is `write_index` minus ring fill minus `snd_pcm_delay` on
+  the PCM we opened. `/proc/asound` is not scanned for some other card.
+- `pa_stream_write` is all-or-nothing. A write larger than
+  `writable_size` is rejected and the caller keeps the buffer.
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
   `snd_pcm_hw_params_set_period_size_near`.
 - Cork keeps the PCM. Close only when the yield file appears or the stream
