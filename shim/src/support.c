@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,6 +111,80 @@ shim_trim_gain(void)
     if (db < -12)
         db = -12;
     return (float)pow(10.0, db / 20.0);
+}
+
+size_t
+shim_alsa_frame_size(snd_pcm_format_t fmt, unsigned channels)
+{
+    int bits;
+
+    if (!channels)
+        return 0;
+    bits = snd_pcm_format_physical_width(fmt);
+    if (bits <= 0)
+        return 0;
+    return ((size_t)bits / 8) * channels;
+}
+
+const char *
+shim_alsa_format_name(snd_pcm_format_t fmt)
+{
+    const char *n = snd_pcm_format_name(fmt);
+
+    return n ? n : "?";
+}
+
+static void
+float_to_s16le(void *buf, size_t samples)
+{
+    const float *in = buf;
+    int16_t *out = buf;
+    size_t i;
+
+    for (i = 0; i < samples; i++) {
+        float x = in[i];
+
+        if (x > 1.f)
+            x = 1.f;
+        if (x < -1.f)
+            x = -1.f;
+        out[i] = (int16_t)lrintf(x * 32767.f);
+    }
+}
+
+static void
+float_to_s32le(void *buf, size_t samples)
+{
+    const float *in = buf;
+    int32_t *out = buf;
+    size_t i;
+
+    for (i = 0; i < samples; i++) {
+        float x = in[i];
+
+        if (x > 1.f)
+            x = 1.f;
+        if (x < -1.f)
+            x = -1.f;
+        out[i] = (int32_t)lrintf(x * 2147483647.f);
+    }
+}
+
+void
+shim_convert_to_alsa(void *buf, size_t frames, unsigned channels,
+                     pa_sample_format_t from, snd_pcm_format_t to)
+{
+    size_t n;
+
+    if (!buf || !frames || !channels)
+        return;
+    if (from != PA_SAMPLE_FLOAT32LE)
+        return;
+    n = frames * channels;
+    if (to == SND_PCM_FORMAT_S16_LE)
+        float_to_s16le(buf, n);
+    else if (to == SND_PCM_FORMAT_S32_LE)
+        float_to_s32le(buf, n);
 }
 
 size_t

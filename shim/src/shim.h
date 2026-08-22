@@ -10,9 +10,6 @@
 
 #define SHIM_YIELD_DEFAULT "/data/soloist/alsa.yield"
 #define SHIM_PATH_MAX 768
-#define SHIM_IOPLUG_MAX_FRAMES 65536
-#define SHIM_CLOCK_FIT_US 100000
-#define SHIM_CLOCK_MAX_DRIFT 0.05
 
 struct ring;
 
@@ -131,18 +128,11 @@ struct pa_stream {
     pa_stream_notify_cb_t underflow_cb;
     void *underflow_cb_userdata;
     pa_usec_t configured_sink_usec;
-    int64_t clock_origin_hw;
-    int64_t clock_last_hw;
+    snd_pcm_format_t alsa_fmt;
+    size_t alsa_fs;
     pa_usec_t clock_frozen_usec;
     pa_usec_t clock_last_played;
     int clock_running;
-    int clock_have_origin;
-    int clock_have_path;
-    char clock_path[SHIM_PATH_MAX];
-    struct timeval clock_model_at;
-    int64_t clock_model_frames;
-    double clock_model_rate;
-    int clock_model_valid;
     pa_time_event *acquire_ev;
     int acquire_attempts;
     int release_pending;
@@ -174,6 +164,10 @@ void shim_apply_volume(void *buf, size_t bytes, const pa_volume_t *vol,
                        const pa_sample_spec *ss);
 void shim_apply_trim(void *buf, size_t bytes, const pa_sample_spec *ss);
 size_t shim_frame_size(const pa_sample_spec *ss);
+size_t shim_alsa_frame_size(snd_pcm_format_t fmt, unsigned channels);
+void shim_convert_to_alsa(void *buf, size_t frames, unsigned channels,
+                          pa_sample_format_t from, snd_pcm_format_t to);
+const char *shim_alsa_format_name(snd_pcm_format_t fmt);
 void shim_context_add_stream(pa_context *c, pa_stream *s);
 void shim_context_remove_stream(pa_context *c, pa_stream *s);
 pa_stream *shim_context_find_stream(pa_context *c, uint32_t idx);

@@ -1,7 +1,5 @@
 #include "shim.h"
 
-#include <dirent.h>
-#include <math.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +65,45 @@ client_format(pa_sample_format_t f)
     default:
         return SND_PCM_FORMAT_FLOAT_LE;
     }
+}
+
+/* Packed S24_3LE is accepted by plug:volumio and then kills volumioswitch.
+ * S16 is what MPD already sends through the same switcher. S32 is what a
+ * USB DAC often wants. Client FLOAT32 is last: hanger with softvolume can
+ * convert it, Rivo without softvolume cannot be assumed to. */
+static int
+pick_alsa_format(snd_pcm_t *pcm, snd_pcm_hw_params_t *hw,
+                 pa_sample_format_t client, snd_pcm_format_t *out)
+{
+    static const snd_pcm_format_t prefer[] = {
+        SND_PCM_FORMAT_S16_LE,
+        SND_PCM_FORMAT_S32_LE,
+    };
+    snd_pcm_hw_params_t *tmp;
+    snd_pcm_format_t client_fmt = client_format(client);
+    size_t i;
+
+    if (snd_pcm_hw_params_malloc(&tmp) < 0)
+        return -1;
+    for (i = 0; i < sizeof(prefer) / sizeof(prefer[0]); i++) {
+        snd_pcm_hw_params_copy(tmp, hw);
+        if (snd_pcm_hw_params_set_format(pcm, tmp, prefer[i]) == 0) {
+            if (snd_pcm_hw_params_set_format(pcm, hw, prefer[i]) == 0) {
+                *out = prefer[i];
+                snd_pcm_hw_params_free(tmp);
+                return 0;
+            }
+        }
+    }
+    snd_pcm_hw_params_copy(tmp, hw);
+    if (snd_pcm_hw_params_set_format(pcm, tmp, client_fmt) == 0 &&
+        snd_pcm_hw_params_set_format(pcm, hw, client_fmt) == 0) {
+        *out = client_fmt;
+        snd_pcm_hw_params_free(tmp);
+        return 0;
+    }
+    snd_pcm_hw_params_free(tmp);
+    return -1;
 }
 
 static int
@@ -183,7 +220,7 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         return;
 
     fs = shim_frame_size(&s->ss);
-    if (fs == 0 || !s->io_buf)
+    if (fs == 0 || !s->io_buf || !s->alsa_fs)
         return;
     avail = snd_pcm_avail(s->pcm);
     if (avail < 0) {
@@ -216,7 +253,7 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     if (paused) {
         if (snd_pcm_state(s->pcm) != SND_PCM_STATE_RUNNING)
             return;
-        memset(s->io_buf, 0, (size_t)avail * fs);
+        memset(s->io_buf, 0, (size_t)avail * s->alsa_fs);
         wr = snd_pcm_writei(s->pcm, s->io_buf, (snd_pcm_uframes_t)avail);
         if (wr < 0 && wr != -EAGAIN)
             stream_prepare(s);
@@ -231,6 +268,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     got = (got / fs) * fs;
     shim_apply_volume(s->io_buf, got, s->volume, &s->ss);
     shim_apply_trim(s->io_buf, got, &s->ss);
+    shim_convert_to_alsa(s->io_buf, got / fs, s->ss.channels, s->ss.format,
+                         s->alsa_fmt);
     wr = snd_pcm_writei(s->pcm, s->io_buf, got / fs);
     if (wr < 0 && wr != -EAGAIN) {
         shim_log("writei %s, avail=%ld\n", snd_strerror((int)wr), (long)avail);
@@ -311,8 +350,10 @@ stream_open_pcm(pa_stream *s)
     snd_pcm_hw_params_malloc(&hw);
     snd_pcm_hw_params_any(s->pcm, hw);
     snd_pcm_hw_params_set_access(s->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
-    err = snd_pcm_hw_params_set_format(s->pcm, hw, client_format(s->ss.format));
-    if (err < 0)
+    if (pick_alsa_format(s->pcm, hw, s->ss.format, &s->alsa_fmt) < 0)
+        goto fail;
+    s->alsa_fs = shim_alsa_frame_size(s->alsa_fmt, s->ss.channels);
+    if (s->alsa_fs == 0)
         goto fail;
     snd_pcm_hw_params_set_rate_resample(s->pcm, hw, 1);
     rate = s->ss.rate;
@@ -377,14 +418,15 @@ stream_open_pcm(pa_stream *s)
     if (s->ss.rate)
         s->configured_sink_usec =
             (pa_usec_t)((uint64_t)buffer * 1000000ULL / s->ss.rate);
-    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%d\n", dev,
-             (unsigned long)period, (unsigned long)buffer, rate,
-             (int)s->ss.format);
+    shim_log("pcm open %s period=%lu buffer=%lu rate=%u client_fmt=%d alsa=%s\n",
+             dev, (unsigned long)period, (unsigned long)buffer, rate,
+             (int)s->ss.format, shim_alsa_format_name(s->alsa_fmt));
     return 0;
 
 fail:
     if (hw)
         snd_pcm_hw_params_free(hw);
+    s->alsa_fs = 0;
     if (s->pcm) {
         stream_abandon_pcm(s->pcm);
         s->pcm = NULL;
@@ -537,15 +579,9 @@ shim_stream_maybe_yield(pa_stream *s)
 static void
 stream_clock_reset(pa_stream *s)
 {
-    s->clock_origin_hw = 0;
-    s->clock_last_hw = -1;
     s->clock_frozen_usec = 0;
     s->clock_last_played = 0;
     s->clock_running = 0;
-    s->clock_have_origin = 0;
-    s->clock_have_path = 0;
-    s->clock_path[0] = 0;
-    s->clock_model_valid = 0;
 }
 
 static void
@@ -580,305 +616,29 @@ stream_clock_hold(pa_stream *s)
     s->timing.read_index = bytes;
 }
 
-static int
-read_key_long(const char *path, const char *key, long *out)
-{
-    FILE *f = fopen(path, "r");
-    char line[256];
-    size_t klen = strlen(key);
-
-    if (!f)
-        return -1;
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, key, klen) == 0 &&
-            (line[klen] == ':' || line[klen] == ' ' || line[klen] == '=')) {
-            char *p = line + klen;
-
-            while (*p == ':' || *p == ' ' || *p == '=')
-                p++;
-            *out = strtol(p, NULL, 10);
-            fclose(f);
-            return 0;
-        }
-    }
-    fclose(f);
-    return -1;
-}
-
-static int
-status_running(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    char line[128];
-    int ok = 0;
-
-    if (!f)
-        return 0;
-    if (fgets(line, sizeof(line), f) && strncmp(line, "state: RUNNING", 14) == 0)
-        ok = 1;
-    fclose(f);
-    return ok;
-}
-
-static int
-path_join(char *dst, size_t dstsz, const char *a, const char *b)
-{
-    size_t na, nb;
-
-    if (!dst || !a || !b || dstsz == 0)
-        return -1;
-    na = strlen(a);
-    nb = strlen(b);
-    if (na + 1 + nb + 1 > dstsz)
-        return -1;
-    memcpy(dst, a, na);
-    dst[na] = '/';
-    memcpy(dst + na + 1, b, nb + 1);
-    return 0;
-}
-
-static int
-path_append(char *dst, size_t dstsz, const char *suffix)
-{
-    size_t n, ns;
-
-    if (!dst || !suffix || dstsz == 0)
-        return -1;
-    n = strlen(dst);
-    ns = strlen(suffix);
-    if (n + 1 + ns + 1 > dstsz)
-        return -1;
-    dst[n] = '/';
-    memcpy(dst + n + 1, suffix, ns + 1);
-    return 0;
-}
-
-static int
-card_loopback(const char *dir)
-{
-    char idp[SHIM_PATH_MAX], id[64];
-    FILE *f;
-
-    if (path_join(idp, sizeof(idp), dir, "id") < 0)
-        return 0;
-    f = fopen(idp, "r");
-    if (!f)
-        return 0;
-    if (!fgets(id, sizeof(id), f)) {
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
-    return strncmp(id, "Loopback", 8) == 0;
-}
-
-struct snap {
-    char path[SHIM_PATH_MAX];
-    long hw_ptr;
-    long delay;
-    long buffer;
-    unsigned rate;
-    int ioplug;
-};
-
-static int
-read_snap(const char *status, struct snap *o)
-{
-    char hw[SHIM_PATH_MAX];
-    size_t n = strlen(status);
-
-    memset(o, 0, sizeof(*o));
-    if (n >= sizeof(o->path) || n < 7 || n + 4 > sizeof(hw) ||
-        strcmp(status + n - 6, "status") != 0)
-        return -1;
-    memcpy(o->path, status, n + 1);
-    memcpy(hw, status, n - 6);
-    memcpy(hw + n - 6, "hw_params", 10);
-    if (!status_running(status))
-        return -1;
-    if (read_key_long(status, "hw_ptr", &o->hw_ptr) < 0)
-        return -1;
-    if (read_key_long(status, "delay", &o->delay) < 0)
-        o->delay = -1;
-    if (read_key_long(hw, "buffer_size", &o->buffer) < 0)
-        o->buffer = -1;
-    {
-        long r = 0;
-
-        if (read_key_long(hw, "rate", &r) == 0)
-            o->rate = (unsigned)r;
-    }
-    o->ioplug = (o->buffer >= SHIM_IOPLUG_MAX_FRAMES);
-    return 0;
-}
-
-static int
-scan_hw(unsigned want, struct snap *best)
-{
-    DIR *cards = opendir("/proc/asound");
-    struct dirent *ce;
-    struct snap pick;
-    int found = 0;
-
-    if (!cards)
-        return -1;
-    memset(&pick, 0, sizeof(pick));
-    while ((ce = readdir(cards))) {
-        char card[SHIM_PATH_MAX];
-        DIR *pcms;
-        struct dirent *pe;
-
-        if (strncmp(ce->d_name, "card", 4) != 0)
-            continue;
-        if (path_join(card, sizeof(card), "/proc/asound", ce->d_name) < 0)
-            continue;
-        if (card_loopback(card))
-            continue;
-        pcms = opendir(card);
-        if (!pcms)
-            continue;
-        while ((pe = readdir(pcms))) {
-            char st[SHIM_PATH_MAX];
-            struct snap snap;
-            size_t plen = strlen(pe->d_name);
-
-            if (plen < 4 || strncmp(pe->d_name, "pcm", 3) != 0)
-                continue;
-            if (pe->d_name[plen - 1] != 'p')
-                continue;
-            if (path_join(st, sizeof(st), card, pe->d_name) < 0)
-                continue;
-            if (path_append(st, sizeof(st), "sub0/status") < 0)
-                continue;
-            if (read_snap(st, &snap) < 0)
-                continue;
-            if (want && snap.rate && snap.rate != want)
-                continue;
-            if (!found) {
-                pick = snap;
-                found = 1;
-                continue;
-            }
-            if (pick.ioplug && !snap.ioplug)
-                pick = snap;
-            else if (pick.ioplug == snap.ioplug && snap.delay >= 0 &&
-                     (pick.delay < 0 || snap.delay < pick.delay))
-                pick = snap;
-        }
-        closedir(pcms);
-    }
-    closedir(cards);
-    if (!found)
-        return -1;
-    *best = pick;
-    return 0;
-}
-
-static int64_t
-unwrap_hw(int64_t last, long raw)
-{
-    int64_t cur = (int64_t)(uint32_t)raw;
-
-    if (last < 0)
-        return (int64_t)raw;
-    {
-        int64_t last32 = last & 0xffffffffLL;
-        int64_t hi = last - last32;
-
-        if (cur + 0x40000000LL < last32)
-            hi += 0x100000000LL;
-        return hi + cur;
-    }
-}
-
-static void
-model_update(pa_stream *s, int64_t hw, const struct timeval *now)
-{
-    long elapsed;
-    double measured;
-
-    if (!s->clock_model_valid) {
-        s->clock_model_at = *now;
-        s->clock_model_frames = hw;
-        s->clock_model_rate = (double)s->ss.rate;
-        s->clock_model_valid = 1;
-        return;
-    }
-    elapsed = (long)(now->tv_sec - s->clock_model_at.tv_sec) * 1000000L +
-              (now->tv_usec - s->clock_model_at.tv_usec);
-    if (elapsed < SHIM_CLOCK_FIT_US)
-        return;
-    measured = (double)(hw - s->clock_model_frames) * 1000000.0 / (double)elapsed;
-    if (s->ss.rate &&
-        fabs(measured - (double)s->ss.rate) / (double)s->ss.rate <
-            SHIM_CLOCK_MAX_DRIFT)
-        s->clock_model_rate = s->clock_model_rate * 0.75 + measured * 0.25;
-    s->clock_model_at = *now;
-    s->clock_model_frames = hw;
-}
-
-static int64_t
-model_frames(pa_stream *s, const struct timeval *now, int64_t hw, long period)
-{
-    long elapsed;
-    int64_t est;
-
-    if (!s->clock_model_valid)
-        return hw;
-    elapsed = (long)(now->tv_sec - s->clock_model_at.tv_sec) * 1000000L +
-              (now->tv_usec - s->clock_model_at.tv_usec);
-    if (elapsed < 0)
-        elapsed = 0;
-    est = s->clock_model_frames +
-          (int64_t)(s->clock_model_rate * (double)elapsed / 1000000.0);
-    if (period > 0 && est > hw + period)
-        est = hw + period;
-    if (est < hw)
-        est = hw;
-    return est;
-}
-
 static pa_usec_t
 stream_hw_time(pa_stream *s)
 {
-    struct snap snap;
-    struct timeval now;
-    int64_t hw;
+    snd_pcm_sframes_t delay = 0;
+    size_t fs, queued;
+    int64_t played;
     pa_usec_t usec;
-    long ptr = 0;
 
     if (!s->clock_running)
         return s->clock_frozen_usec;
-    gettimeofday(&now, NULL);
-    if (!s->clock_have_path) {
-        if (scan_hw(s->ss.rate, &snap) < 0)
-            return s->clock_last_played;
-        memcpy(s->clock_path, snap.path, sizeof(s->clock_path));
-        s->clock_have_path = 1;
-        ptr = snap.hw_ptr;
-    } else if (!status_running(s->clock_path) ||
-               read_key_long(s->clock_path, "hw_ptr", &ptr) < 0) {
-        s->clock_have_path = 0;
+    fs = shim_frame_size(&s->ss);
+    if (!fs || !s->ss.rate)
         return s->clock_last_played;
-    }
-    hw = unwrap_hw(s->clock_last_hw, ptr);
-    s->clock_last_hw = hw;
-    model_update(s, hw, &now);
-    hw = model_frames(s, &now, hw, (long)s->period);
-    if (!s->clock_have_origin) {
-        if (s->clock_frozen_usec && s->ss.rate) {
-            int64_t back = (int64_t)((uint64_t)s->clock_frozen_usec *
-                                     s->ss.rate / 1000000ULL);
 
-            s->clock_origin_hw = hw - back;
-        } else {
-            s->clock_origin_hw = hw;
-        }
-        s->clock_have_origin = 1;
-    }
-    if (s->ss.rate == 0)
-        return s->clock_last_played;
-    usec = (pa_usec_t)((hw - s->clock_origin_hw) * 1000000LL / s->ss.rate);
+    queued = ring_readable(s->rb);
+    if (s->pcm && snd_pcm_delay(s->pcm, &delay) == 0 && delay > 0)
+        queued += (size_t)delay * fs;
+
+    played = s->timing.write_index - (int64_t)queued;
+    if (played < 0)
+        played = 0;
+    usec = (pa_usec_t)((uint64_t)played * 1000000ULL /
+                       (fs * (uint64_t)s->ss.rate));
     if (usec < s->clock_last_played)
         usec = s->clock_last_played;
     s->clock_last_played = usec;
@@ -936,7 +696,8 @@ stream_alloc(pa_context *c, const pa_sample_spec *ss)
     s->state = PA_STREAM_UNCONNECTED;
     s->ss = *ss;
     s->paused = 1;
-    s->clock_last_hw = -1;
+    s->alsa_fmt = client_format(ss->format);
+    s->alsa_fs = shim_alsa_frame_size(s->alsa_fmt, ss->channels);
     for (i = 0; i < PA_CHANNELS_MAX; i++)
         s->volume[i] = PA_VOLUME_NORM;
     fs = shim_frame_size(ss);
@@ -1193,15 +954,13 @@ pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *u
     s->underflow_cb_userdata = u;
 }
 
-SHIM_EXPORT
-size_t
-pa_stream_writable_size(pa_stream *s)
+static size_t
+stream_writable_bytes(pa_stream *s)
 {
     size_t room_ring, fs;
     int64_t fill, room;
 
-    shim_api_hot("pa_stream_writable_size");
-    if (!s->rb)
+    if (!s || !s->rb)
         return 0;
     room_ring = ring_writable(s->rb);
     fs = shim_frame_size(&s->ss);
@@ -1217,18 +976,40 @@ pa_stream_writable_size(pa_stream *s)
 }
 
 SHIM_EXPORT
+size_t
+pa_stream_writable_size(pa_stream *s)
+{
+    shim_api_hot("pa_stream_writable_size");
+    return stream_writable_bytes(s);
+}
+
+SHIM_EXPORT
 int
 pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
                 pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek)
 {
-    size_t n;
+    size_t n, room;
 
     (void)offset;
     (void)seek;
     shim_api_hot("pa_stream_write");
     if (!s->rb || !data)
         return -1;
+    if (nbytes == 0) {
+        if (free_cb)
+            free_cb((void *)data);
+        return 0;
+    }
+    room = stream_writable_bytes(s);
+    if (nbytes > room) {
+        shim_log("write rejected nbytes=%zu room=%zu\n", nbytes, room);
+        return -1;
+    }
     n = ring_write(s->rb, data, nbytes);
+    if (n != nbytes)
+        shim_log("write short after room check nbytes=%zu n=%zu\n", nbytes, n);
+    if (!n)
+        return -1;
     s->timing.write_index += (int64_t)n;
     {
         static int writes;
@@ -1240,16 +1021,14 @@ pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
         }
     }
     shim_stream_maybe_yield(s);
-    if (n > 0) {
-        if (s->pcm && !s->paused)
+    if (s->pcm && !s->paused)
+        shim_stream_set_output(s, 1);
+    else if (!s->pcm && s->want_running) {
+        if (shim_stream_acquire(s) == 0) {
+            s->paused = 0;
             shim_stream_set_output(s, 1);
-        else if (!s->pcm && s->want_running) {
-            if (shim_stream_acquire(s) == 0) {
-                s->paused = 0;
-                shim_stream_set_output(s, 1);
-            } else {
-                shim_stream_schedule_acquire(s);
-            }
+        } else {
+            shim_stream_schedule_acquire(s);
         }
     }
     if (free_cb)
