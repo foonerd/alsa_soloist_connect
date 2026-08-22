@@ -988,47 +988,39 @@ int
 pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
                 pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek)
 {
-    size_t n, room;
+    size_t n;
 
     (void)offset;
     (void)seek;
     shim_api_hot("pa_stream_write");
     if (!s->rb || !data)
         return -1;
-    if (nbytes == 0) {
-        if (free_cb)
-            free_cb((void *)data);
-        return 0;
-    }
-    room = stream_writable_bytes(s);
-    if (nbytes > room) {
-        shim_log("write rejected nbytes=%zu room=%zu\n", nbytes, room);
-        return -1;
-    }
     n = ring_write(s->rb, data, nbytes);
-    if (n != nbytes)
-        shim_log("write short after room check nbytes=%zu n=%zu\n", nbytes, n);
-    if (!n)
-        return -1;
     s->timing.write_index += (int64_t)n;
     {
-        static int writes;
+        static int writes, shorts;
 
-        if (writes < 8) {
+        if (n != nbytes && shorts < 8) {
+            shim_log("write %zu -> %zu queued=%zu paused=%d pcm=%d\n", nbytes, n,
+                     ring_readable(s->rb), s->paused, s->pcm != NULL);
+            shorts++;
+        } else if (writes < 8) {
             shim_log("write %zu -> %zu queued=%zu paused=%d pcm=%d\n", nbytes, n,
                      ring_readable(s->rb), s->paused, s->pcm != NULL);
             writes++;
         }
     }
     shim_stream_maybe_yield(s);
-    if (s->pcm && !s->paused)
-        shim_stream_set_output(s, 1);
-    else if (!s->pcm && s->want_running) {
-        if (shim_stream_acquire(s) == 0) {
-            s->paused = 0;
+    if (n > 0) {
+        if (s->pcm && !s->paused)
             shim_stream_set_output(s, 1);
-        } else {
-            shim_stream_schedule_acquire(s);
+        else if (!s->pcm && s->want_running) {
+            if (shim_stream_acquire(s) == 0) {
+                s->paused = 0;
+                shim_stream_set_output(s, 1);
+            } else {
+                shim_stream_schedule_acquire(s);
+            }
         }
     }
     if (free_cb)

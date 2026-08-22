@@ -1,4 +1,4 @@
-# Pulse shim 0.2.1
+# Pulse shim 0.2.2
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
@@ -13,7 +13,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.2.1. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.2. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -41,8 +41,9 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
   volumioswitch then dies. Bit-perfect is not possible.
 - Played time is `write_index` minus ring fill minus `snd_pcm_delay` on
   the PCM we opened. `/proc/asound` is not scanned for some other card.
-- `pa_stream_write` is all-or-nothing. A write larger than
-  `writable_size` is rejected and the caller keeps the buffer.
+- `pa_stream_write` takes a prefix if the ring cannot hold the whole
+  buffer. Soloist always writes 32 KiB and will not uncork if that call
+  fails, so rejecting a short write deadlocks preroll (0.2.1 on hanger).
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
   `snd_pcm_hw_params_set_period_size_near`.
 - Cork keeps the PCM. Close only when the yield file appears or the stream
