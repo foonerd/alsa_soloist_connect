@@ -145,6 +145,11 @@ echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlen
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
 # CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.
+#
+# Soloist has no --api-key-file and no env. The real key has to be on argv
+# at exec. The shim overwrites that slot on the first pa_* call so `ps`
+# and logsubmit see SHIM_API_KEY_DECOY, not the secret. Drop API_KEY from
+# the inherited environment so /proc/PID/environ is clean too.
 ARGS=(
   --device-name "$DEVICE_NAME"
   --api-key "$API_KEY"
@@ -189,5 +194,5 @@ fi
 # Shim directory only. Soloist's RPATH already points at the sideloaded glibc.
 # Putting sysroot on LD_LIBRARY_PATH here would poison nothing (we exec),
 # but keep it off so a mistaken wrapper cannot break 64-bit helpers.
-exec env LD_LIBRARY_PATH="$APULSE_DIR" \
+exec env -u API_KEY LD_LIBRARY_PATH="$APULSE_DIR" \
   "$BIN" "${ARGS[@]}"

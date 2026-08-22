@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.11.**
+> **Alpha, version 0.6.12.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -27,12 +27,12 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes S16 (then S32) into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. Conversion happens in the shim; `pcm.softvolume` is not required.
 
-It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.2**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.3**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
     SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
-    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.2"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.3"]
     Shim -->|"S16 writei"| Plug["plug:volumio"]
     Plug --> Switch["volumioswitch"]
     Switch --> Out["softvolume or plug"]
@@ -48,7 +48,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.2.2 source. See [`shim/README.md`](shim/README.md). |
+| `shim/` | Pulse shim 0.2.3 source. See [`shim/README.md`](shim/README.md). |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "shim.h"
 
 #include <math.h>
@@ -7,6 +8,87 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/*
+ * What `ps` and logsubmit show after Pulse comes up. Must be shorter than a
+ * real Soloist key. Soloist only accepts --api-key on argv, so the genuine
+ * key is there from exec until the first pa_* call; then we overwrite the
+ * argv slot. Do not put the real value in any log line.
+ */
+#define SHIM_API_KEY_DECOY "nice-try-logsubmit"
+
+static int
+read_arg_range(unsigned long *start, unsigned long *end)
+{
+    FILE *f;
+    char buf[4096];
+    char *rparen;
+    char *tok;
+    char *save;
+    unsigned long field[50];
+    int n = 0;
+
+    f = fopen("/proc/self/stat", "r");
+    if (!f)
+        return -1;
+    if (!fgets(buf, sizeof(buf), f)) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    rparen = strrchr(buf, ')');
+    if (!rparen || rparen[1] != ' ')
+        return -1;
+    tok = strtok_r(rparen + 2, " ", &save);
+    while (tok && n < 50) {
+        field[n++] = strtoul(tok, NULL, 10);
+        tok = strtok_r(NULL, " ", &save);
+    }
+    /* field[0] is comm's neighbour (stat field 3). arg_start is 48. */
+    if (n < 47)
+        return -1;
+    *start = field[45];
+    *end = field[46];
+    return 0;
+}
+
+void
+shim_scrub_cmdline_secrets(void)
+{
+    static int done;
+    unsigned long arg_start = 0, arg_end = 0;
+    char *p;
+    char *end;
+    char *next;
+    size_t decoy_len;
+
+    if (done)
+        return;
+    done = 1;
+    unsetenv("API_KEY");
+
+    if (read_arg_range(&arg_start, &arg_end) != 0 || arg_end <= arg_start)
+        return;
+    p = (char *)(uintptr_t)arg_start;
+    end = (char *)(uintptr_t)arg_end;
+    decoy_len = strlen(SHIM_API_KEY_DECOY);
+
+    while (p < end) {
+        next = p + strlen(p) + 1;
+        if (strcmp(p, "--api-key") == 0 || strcmp(p, "-k") == 0) {
+            if (next < end && *next) {
+                size_t n = strlen(next);
+
+                memset(next, 0, n);
+                memcpy(next, SHIM_API_KEY_DECOY,
+                       decoy_len < n ? decoy_len : n);
+                shim_log("cmdline --api-key scrubbed (%zu bytes)\n", n);
+            }
+            return;
+        }
+        p = next;
+    }
+}
 
 void
 shim_log(const char *fmt, ...)
@@ -32,6 +114,7 @@ shim_log(const char *fmt, ...)
 void
 shim_api(const char *fn)
 {
+    shim_scrub_cmdline_secrets();
     if (fn)
         shim_log("%s\n", fn);
 }
@@ -44,6 +127,7 @@ shim_api_hot(const char *fn)
     static int n;
     int i;
 
+    shim_scrub_cmdline_secrets();
     if (!fn)
         return;
     for (i = 0; i < n; i++) {

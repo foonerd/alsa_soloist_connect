@@ -149,6 +149,7 @@ size_t ring_peek(struct ring *r, void *data, size_t n);
 void ring_drop(struct ring *r, size_t n);
 
 void shim_log(const char *fmt, ...);
+void shim_scrub_cmdline_secrets(void);
 void shim_api(const char *fn);
 void shim_api_hot(const char *fn);
 void shim_wakeup(pa_mainloop *m);
