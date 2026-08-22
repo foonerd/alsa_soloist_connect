@@ -756,11 +756,7 @@ SoloistConnect.prototype.daemonPid = function () {
 // caused an endless play/pause loop.
 SoloistConnect.prototype.updateActive = function (msg) {
   if (typeof msg.is_active !== 'boolean') return;
-  if (!this.active && msg.is_active) {
-    this.activatedAt = Date.now();
-    // unsetVolatile leaves the yield file; a new selection must be able to open.
-    this.clearAlsaYield();
-  }
+  if (!this.active && msg.is_active) this.activatedAt = Date.now();
   this.active = msg.is_active;
 };
 
@@ -1479,14 +1475,12 @@ SoloistConnect.prototype.pause = function () {
 
 SoloistConnect.prototype.play = function () {
   this.pendingYieldAt = 0;
-  this.clearAlsaYield();
   this.sendCommand({ command: 'play' });
   return libQ.resolve();
 };
 
 SoloistConnect.prototype.resume = function () {
   this.pendingYieldAt = 0;
-  this.clearAlsaYield();
   this.sendCommand({ command: 'play' });
   return libQ.resolve();
 };

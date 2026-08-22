@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.8.**
+> **Alpha, version 0.6.9.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -25,15 +25,15 @@ This document is for people building or modifying the plugin.
 Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAudio. Volumio 4 has neither.
 
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
-The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes into `plug:volumio` in the first of `S24_3LE`, `S24_LE`, `S16_LE` that the chain accepts (else FLOAT32), so Volumio's volume control, DSP and other AAMPP contributions all apply.
+The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply.
 
-It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.3.2**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.0**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
     SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
-    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.3.2"]
-    Shim -->|"S24_3LE writei"| Plug["plug:volumio"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.0"]
+    Shim -->|"FLOAT32 writei"| Plug["plug:volumio"]
     Plug --> Switch["volumioswitch"]
     Switch --> Soft["softvolume S24_3LE"]
     Soft --> Dac["DAC"]
@@ -48,7 +48,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.3.2 source. See [`shim/README.md`](shim/README.md). |
+| `shim/` | Pulse shim 0.2.0 source. See [`shim/README.md`](shim/README.md). |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
@@ -121,7 +121,7 @@ The build images carry `libasound2-dev` and a toolchain, and nothing else. glib 
 
 The contract is in [`shim/src/stream.c`](shim/src/stream.c). A longer note is in [`shim/README.md`](shim/README.md).
 
-**One convert into `plug:volumio`.** Soloist decodes every quality to FLOAT32. The ring stays that format. The PCM is opened as the first of `S24_3LE`, `S24_LE`, `S16_LE` that the chain accepts (else FLOAT32). Rate uses `set_rate_near` with resample on. After open and after uncork the shim times `writei`; if the consumer is a standard rate other than the track, a windowed-sinc convert matches it. Softvolume can still gain. Bit-perfect is not possible on this chain.
+**FLOAT32 identity into `plug:volumio`.** Soloist decodes every quality to FLOAT32. The shim writes that format. `pcm.softvolume` forces `S24_3LE`, so AAMPP does the one conversion. Doing the conversion in the shim was tried; it is not what ships. Bit-perfect is not possible on this chain.
 
 **Pulse parameters pace the client, not the device.** `tlength` (capped by `APULSE_MAX_TLENGTH_MS`) and `minreq` are the Pulse buffer target and write quantum. The ALSA period is `snd_pcm_hw_params_set_period_size_near`. Deriving the period from `minreq` as frames produced ~882 and coupled the Output Buffer slider to the IRQ size; testers changing the slider could not uncouple them.
 
