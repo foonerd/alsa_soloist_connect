@@ -123,12 +123,15 @@ struct pa_stream {
     size_t rs_buf_frames;
     unsigned write_rate;
     uint64_t pace_frames;
+    uint64_t pace_skip;
     int64_t pace_t0_ns;
+    unsigned pace_guess;
     int pace_armed;
     int pace_done;
     snd_pcm_format_t dev_fmt;
     size_t dev_frame_size;
     snd_pcm_uframes_t period;
+    snd_pcm_uframes_t buffer_frames;
     pa_io_event **ioe;
     int nioe;
     pa_io_event_flags_t ioe_events;
@@ -171,6 +174,7 @@ size_t ring_peek(struct ring *r, void *data, size_t n);
 void ring_drop(struct ring *r, size_t n);
 
 void shim_log(const char *fmt, ...);
+void shim_log_always(const char *fmt, ...);
 void shim_api(const char *fn);
 void shim_api_hot(const char *fn);
 void shim_wakeup(pa_mainloop *m);

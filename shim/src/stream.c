@@ -492,6 +492,7 @@ stream_open_pcm(pa_stream *s)
     hw = NULL;
 
     s->period = period;
+    s->buffer_frames = buffer;
     stream_free_io_bufs(s);
     s->io_buf_bytes = (size_t)period * 4 * fs;
     if (s->io_buf_bytes < fs)
@@ -541,9 +542,9 @@ stream_open_pcm(pa_stream *s)
     if (!s->write_rate)
         s->write_rate = s->ss.rate;
     pace_restart(s);
-    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%s resample=%d write_rate=%u\n",
-             dev, (unsigned long)period, (unsigned long)buffer, rate,
-             snd_pcm_format_name(s->dev_fmt), resample, s->write_rate);
+    shim_log_always("pcm open %s period=%lu buffer=%lu rate=%u fmt=%s resample=%d write_rate=%u\n",
+                    dev, (unsigned long)period, (unsigned long)buffer, rate,
+                    snd_pcm_format_name(s->dev_fmt), resample, s->write_rate);
     return 0;
 
 fail:
@@ -570,7 +571,9 @@ static void
 pace_restart(pa_stream *s)
 {
     s->pace_frames = 0;
+    s->pace_skip = 0;
     s->pace_t0_ns = 0;
+    s->pace_guess = 0;
     s->pace_armed = 0;
     s->pace_done = 0;
 }
@@ -630,9 +633,17 @@ pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t now_ns)
     double hz;
     unsigned snap;
     int64_t ns;
+    uint64_t need;
 
     if (s->pace_done || wr <= 0 || now_ns <= 0)
         return;
+    need = s->buffer_frames ? (uint64_t)s->buffer_frames : (uint64_t)s->period * 4;
+    if (!need)
+        need = 4096;
+    if (s->pace_skip < need) {
+        s->pace_skip += (uint64_t)wr;
+        return;
+    }
     if (!s->pace_armed) {
         s->pace_t0_ns = now_ns;
         s->pace_armed = 1;
@@ -642,27 +653,32 @@ pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t now_ns)
     if (ns <= 0)
         return;
     s->pace_frames += (uint64_t)wr;
-    if (ns < 80000000LL)
+    if (ns < 200000000LL)
         return;
     hz = (double)s->pace_frames * 1e9 / (double)ns;
     snap = shim_snap_rate(hz);
     s->pace_frames = 0;
     s->pace_t0_ns = now_ns;
     if (!snap) {
-        shim_log("pace measured=%.0f snap=0 keep=%u\n", hz, s->write_rate);
+        shim_log_always("pace measured=%.0f snap=0 keep=%u\n", hz, s->write_rate);
+        return;
+    }
+    if (snap != s->pace_guess) {
+        s->pace_guess = snap;
+        shim_log_always("pace measured=%.0f snap=%u wait\n", hz, snap);
         return;
     }
     s->pace_done = 1;
     if (snap == s->write_rate) {
-        shim_log("pace measured=%.0f snap=%u keep\n", hz, snap);
+        shim_log_always("pace measured=%.0f snap=%u keep\n", hz, snap);
         return;
     }
     if (pace_set_write_rate(s, snap) < 0) {
         s->pace_done = 0;
-        shim_log("pace measured=%.0f snap=%u convert failed\n", hz, snap);
+        shim_log_always("pace measured=%.0f snap=%u convert failed\n", hz, snap);
         return;
     }
-    shim_log("pace measured=%.0f snap=%u client=%u\n", hz, snap, s->ss.rate);
+    shim_log_always("pace measured=%.0f snap=%u client=%u\n", hz, snap, s->ss.rate);
 }
 
 static void

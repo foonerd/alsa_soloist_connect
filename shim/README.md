@@ -1,4 +1,4 @@
-# Pulse shim 0.3.1
+# Pulse shim 0.3.2
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
@@ -13,7 +13,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.3.1. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.3.2. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -38,9 +38,9 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 - Client FLOAT32 stays in the ring. The PCM is opened as the first of
   `S24_3LE`, `S24_LE`, `S16_LE` that `plug:volumio` accepts, else FLOAT32.
   One convert on `writei`. Rate is `set_rate_near` with resample on.
-  After open and after uncork, frames versus wall time (including the
-  wait for the next poll) give the consumer rate; if that is a standard
-  rate other than the track, a windowed-sinc convert matches it.
+  After open and after uncork, the first ALSA buffer is ignored (fill).
+  Then two 200 ms windows of frames versus wall time (including the poll
+  wait) must agree before a convert; pcm open and pace lines always log.
   Softvolume can still gain. Bit-perfect is not possible.
 - Pulse `tlength` / `minreq` pace Soloist. The ALSA period is chosen with
   `snd_pcm_hw_params_set_period_size_near`.

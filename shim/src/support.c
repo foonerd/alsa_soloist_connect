@@ -7,6 +7,24 @@
 #include <string.h>
 #include <unistd.h>
 
+static void
+vshim_log(const char *fmt, va_list ap)
+{
+    fputs("soloist-shim: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fflush(stderr);
+}
+
+void
+shim_log_always(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vshim_log(fmt, ap);
+    va_end(ap);
+}
+
 void
 shim_log(const char *fmt, ...)
 {
@@ -21,11 +39,9 @@ shim_log(const char *fmt, ...)
     }
     if (!on)
         return;
-    fputs("soloist-shim: ", stderr);
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vshim_log(fmt, ap);
     va_end(ap);
-    fflush(stderr);
 }
 
 void
