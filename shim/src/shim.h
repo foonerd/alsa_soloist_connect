@@ -118,6 +118,13 @@ struct pa_stream {
     size_t io_buf_bytes;
     void *cvt_buf;
     size_t cvt_buf_bytes;
+    struct shim_resampler *rs;
+    float *rs_buf;
+    size_t rs_buf_frames;
+    unsigned write_rate;
+    uint64_t pace_frames;
+    int64_t pace_ns;
+    int pace_done;
     snd_pcm_format_t dev_fmt;
     size_t dev_frame_size;
     snd_pcm_uframes_t period;

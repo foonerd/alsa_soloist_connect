@@ -1,4 +1,6 @@
+#define _POSIX_C_SOURCE 200809L
 #include "shim.h"
+#include "resample.h"
 
 #include <dirent.h>
 #include <math.h>
@@ -6,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void stream_release(pa_stream *s, int keep_position);
 static void stream_clock_reset(pa_stream *s);
@@ -15,6 +18,11 @@ static void stream_clock_start(pa_stream *s);
 static pa_usec_t stream_hw_time(pa_stream *s);
 static void stream_set_state(pa_stream *s, pa_stream_state_t st);
 static int stream_open_pcm(pa_stream *s);
+static void pace_restart(pa_stream *s);
+static void pace_clear(pa_stream *s);
+static int pace_set_write_rate(pa_stream *s, unsigned rate);
+static void pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t ns);
+static int ensure_rs_buf(pa_stream *s, size_t frames);
 
 static void
 adjust_attr(pa_stream *s, const pa_buffer_attr *in)
@@ -135,6 +143,9 @@ stream_free_io_bufs(pa_stream *s)
     free(s->cvt_buf);
     s->cvt_buf = NULL;
     s->cvt_buf_bytes = 0;
+    free(s->rs_buf);
+    s->rs_buf = NULL;
+    s->rs_buf_frames = 0;
 }
 
 static int
@@ -238,7 +249,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
 {
     pa_stream *s = userdata;
     snd_pcm_sframes_t avail, wr;
-    size_t fs, got, nbytes;
+    size_t fs, got, nbytes, in_used = 0;
+    snd_pcm_uframes_t out_frames = 0;
     int paused;
 
     (void)a;
@@ -309,17 +321,54 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     shim_apply_volume(s->io_buf, got, s->volume, &s->ss);
     shim_apply_trim(s->io_buf, got, &s->ss);
     {
-        snd_pcm_uframes_t frames = got / fs;
+        snd_pcm_uframes_t in_frames = got / fs;
+        const float *fsrc = (const float *)s->io_buf;
         const void *out = s->io_buf;
+        struct timespec t0, t1;
+        int64_t ns;
 
+        out_frames = in_frames;
+        in_used = in_frames;
+        {
+            size_t want = (size_t)avail;
+
+            if (s->dev_frame_size && s->cvt_buf_bytes) {
+                size_t mf = s->cvt_buf_bytes / s->dev_frame_size;
+
+                if (want > mf)
+                    want = mf;
+            }
+            if (s->write_rate && s->ss.rate && s->write_rate != s->ss.rate) {
+                if (!s->rs || ensure_rs_buf(s, want) < 0)
+                    return;
+                out_frames = (snd_pcm_uframes_t)shim_resample_process(
+                    s->rs, fsrc, in_frames, s->rs_buf, want, &in_used);
+                if (out_frames == 0) {
+                    if (in_used)
+                        ring_drop(s->rb, in_used * fs);
+                    return;
+                }
+                fsrc = s->rs_buf;
+                out = s->rs_buf;
+            } else if (want < (size_t)out_frames) {
+                out_frames = (snd_pcm_uframes_t)want;
+                in_used = out_frames;
+            }
+        }
         if (s->dev_fmt != SND_PCM_FORMAT_FLOAT_LE &&
             s->dev_fmt != SND_PCM_FORMAT_FLOAT_BE) {
             if (!s->cvt_buf || !s->dev_frame_size)
                 return;
-            pack_dev(s->cvt_buf, s->io_buf, frames, s->ss.channels, s->dev_fmt);
+            pack_dev(s->cvt_buf, fsrc, out_frames, s->ss.channels, s->dev_fmt);
             out = s->cvt_buf;
         }
-        wr = snd_pcm_writei(s->pcm, out, frames);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        wr = snd_pcm_writei(s->pcm, out, out_frames);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        ns = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
+             (t1.tv_nsec - t0.tv_nsec);
+        if (wr > 0)
+            pace_note(s, wr, ns);
     }
     if (wr < 0 && wr != -EAGAIN) {
         shim_log("writei %s, avail=%ld\n", snd_strerror((int)wr), (long)avail);
@@ -327,7 +376,20 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         return;
     }
     if (wr > 0) {
-        ring_drop(s->rb, (size_t)wr * fs);
+        size_t drop = (size_t)wr;
+
+        if (s->write_rate && s->ss.rate && s->write_rate != s->ss.rate) {
+            snd_pcm_uframes_t in_frames = got / fs;
+            snd_pcm_uframes_t produced = out_frames;
+
+            if (produced > 0)
+                drop = (size_t)((uint64_t)wr * in_used / produced);
+            else
+                drop = in_used;
+            if (drop > in_frames)
+                drop = in_frames;
+        }
+        ring_drop(s->rb, drop * fs);
         stream_clock_start(s);
         if (s->started_cb)
             s->started_cb(s, s->started_cb_userdata);
@@ -482,9 +544,12 @@ stream_open_pcm(pa_stream *s)
     if (s->ss.rate)
         s->configured_sink_usec =
             (pa_usec_t)((uint64_t)buffer * 1000000ULL / s->ss.rate);
-    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%s resample=%d\n",
+    if (!s->write_rate)
+        s->write_rate = s->ss.rate;
+    pace_restart(s);
+    shim_log("pcm open %s period=%lu buffer=%lu rate=%u fmt=%s resample=%d write_rate=%u\n",
              dev, (unsigned long)period, (unsigned long)buffer, rate,
-             snd_pcm_format_name(s->dev_fmt), resample);
+             snd_pcm_format_name(s->dev_fmt), resample, s->write_rate);
     return 0;
 
 fail:
@@ -496,6 +561,95 @@ fail:
         s->pcm = NULL;
     }
     return -1;
+}
+
+static void
+pace_restart(pa_stream *s)
+{
+    s->pace_frames = 0;
+    s->pace_ns = 0;
+    s->pace_done = 0;
+}
+
+static void
+pace_clear(pa_stream *s)
+{
+    pace_restart(s);
+    s->write_rate = s->ss.rate;
+    shim_resample_free(s->rs);
+    s->rs = NULL;
+}
+
+static int
+ensure_rs_buf(pa_stream *s, size_t frames)
+{
+    float *p;
+
+    if (!frames)
+        return -1;
+    if (s->rs_buf && s->rs_buf_frames >= frames)
+        return 0;
+    p = malloc(frames * s->ss.channels * sizeof(float));
+    if (!p)
+        return -1;
+    free(s->rs_buf);
+    s->rs_buf = p;
+    s->rs_buf_frames = frames;
+    return 0;
+}
+
+static int
+pace_set_write_rate(pa_stream *s, unsigned rate)
+{
+    if (!rate)
+        return -1;
+    if (rate == s->ss.rate) {
+        shim_resample_free(s->rs);
+        s->rs = NULL;
+        s->write_rate = rate;
+        return 0;
+    }
+    if (!s->rs) {
+        s->rs = shim_resample_new();
+        if (!s->rs)
+            return -1;
+    }
+    if (shim_resample_set(s->rs, s->ss.rate, rate, s->ss.channels) < 0)
+        return -1;
+    s->write_rate = rate;
+    return 0;
+}
+
+static void
+pace_note(pa_stream *s, snd_pcm_sframes_t wr, int64_t ns)
+{
+    double hz;
+    unsigned snap;
+
+    if (wr <= 0 || ns < 2000000LL)
+        return;
+    s->pace_frames += (uint64_t)wr;
+    s->pace_ns += ns;
+    if (s->pace_ns < 80000000LL)
+        return;
+    hz = (double)s->pace_frames * 1e9 / (double)s->pace_ns;
+    snap = shim_snap_rate(hz);
+    s->pace_frames = 0;
+    s->pace_ns = 0;
+    if (!snap) {
+        shim_log("pace measured=%.0f snap=0 keep=%u\n", hz, s->write_rate);
+        return;
+    }
+    if (snap == s->write_rate) {
+        s->pace_done = 1;
+        return;
+    }
+    if (pace_set_write_rate(s, snap) < 0) {
+        shim_log("pace measured=%.0f snap=%u convert failed\n", hz, snap);
+        return;
+    }
+    s->pace_done = 1;
+    shim_log("pace measured=%.0f snap=%u client=%u\n", hz, snap, s->ss.rate);
 }
 
 static void
@@ -523,6 +677,7 @@ stream_close_pcm(pa_stream *s, int keep_position)
         shim_log("pcm close handed off keep=%d\n", keep_position);
     }
     stream_free_io_bufs(s);
+    pace_clear(s);
     if (s->rb)
         ring_drop(s->rb, ring_readable(s->rb));
     if (keep_position)
@@ -1040,6 +1195,7 @@ stream_alloc(pa_context *c, const pa_sample_spec *ss)
     s->state = PA_STREAM_UNCONNECTED;
     s->ss = *ss;
     s->paused = 1;
+    s->write_rate = ss->rate;
     s->clock_last_hw = -1;
     for (i = 0; i < PA_CHANNELS_MAX; i++)
         s->volume[i] = PA_VOLUME_NORM;
@@ -1130,6 +1286,7 @@ cork_run(pa_operation *op)
             shim_stream_maybe_yield(s);
     } else {
         s->want_running = 1;
+        pace_restart(s);
         if (s->pcm) {
             stream_clock_start(s);
             s->paused = 0;
@@ -1378,5 +1535,7 @@ pa_stream_unref(pa_stream *s)
     pa_context_unref(s->c);
     ring_free(s->rb);
     stream_free_io_bufs(s);
+    shim_resample_free(s->rs);
+    s->rs = NULL;
     free(s);
 }

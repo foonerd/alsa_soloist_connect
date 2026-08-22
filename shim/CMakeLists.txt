@@ -16,6 +16,7 @@ add_library(pulse SHARED
     src/context.c
     src/stream.c
     src/ring.c
+    src/resample.c
 )
 
 target_include_directories(pulse PRIVATE
@@ -29,7 +30,7 @@ target_link_libraries(pulse PRIVATE ${ALSA_LIBRARIES} m pthread)
 set_target_properties(pulse PROPERTIES
     OUTPUT_NAME pulse
     SOVERSION 0
-    VERSION 0.2.0
+    VERSION 0.3.0
     LINK_FLAGS "-Wl,--version-script=${CMAKE_SOURCE_DIR}/pulse.sym"
 )
 
