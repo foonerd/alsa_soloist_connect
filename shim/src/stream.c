@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Soloist writes 8–32 KiB even when writable_size is smaller. The ring
+ * must be larger than tlength or pa_stream_write drops the tail and
+ * the track plays in shreds (fast + choppy). Default buffer_ms=500 is
+ * exactly 0.5 s of FLOAT32, which was the old ring size. */
+#define SHIM_WRITE_SLACK 65536
+
 static void stream_release(pa_stream *s, int keep_position);
 static void stream_clock_reset(pa_stream *s);
 static void stream_clock_freeze(pa_stream *s);
@@ -44,6 +50,18 @@ adjust_attr(pa_stream *s, const pa_buffer_attr *in)
         a->minreq = a->tlength / 4;
     if (a->prebuf == (uint32_t)-1)
         a->prebuf = a->tlength - a->minreq;
+    {
+        size_t need = (size_t)a->tlength + SHIM_WRITE_SLACK;
+
+        if (need < 72 * 1024)
+            need = 72 * 1024;
+        if (!s->rb) {
+            s->rb = ring_new(need);
+        } else if (ring_capacity(s->rb) < need && ring_readable(s->rb) == 0) {
+            ring_free(s->rb);
+            s->rb = ring_new(need);
+        }
+    }
 }
 
 static snd_pcm_format_t
@@ -268,6 +286,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     }
     if (wr > 0) {
         ring_drop(s->rb, (size_t)wr * fs);
+        if (ring_readable(s->rb) < fs)
+            shim_stream_set_output(s, 0);
         stream_clock_start(s);
         if (s->started_cb)
             s->started_cb(s, s->started_cb_userdata);
@@ -690,7 +710,6 @@ static pa_stream *
 stream_alloc(pa_context *c, const pa_sample_spec *ss)
 {
     pa_stream *s = calloc(1, sizeof(*s));
-    size_t fs, rb;
     unsigned i;
 
     s->ref = 1;
@@ -703,11 +722,6 @@ stream_alloc(pa_context *c, const pa_sample_spec *ss)
     s->alsa_fs = shim_alsa_frame_size(s->alsa_fmt, ss->channels);
     for (i = 0; i < PA_CHANNELS_MAX; i++)
         s->volume[i] = PA_VOLUME_NORM;
-    fs = shim_frame_size(ss);
-    rb = fs * ss->rate / 2;
-    if (rb < 72 * 1024)
-        rb = 72 * 1024;
-    s->rb = ring_new(rb);
     stream_clock_reset(s);
     adjust_attr(s, NULL);
     shim_context_add_stream(c, s);

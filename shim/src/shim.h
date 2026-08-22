@@ -141,6 +141,7 @@ struct pa_stream {
 
 struct ring *ring_new(size_t bytes);
 void ring_free(struct ring *r);
+size_t ring_capacity(struct ring *r);
 size_t ring_readable(struct ring *r);
 size_t ring_writable(struct ring *r);
 size_t ring_write(struct ring *r, const void *data, size_t n);
