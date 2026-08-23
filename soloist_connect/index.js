@@ -454,17 +454,71 @@ SoloistConnect.prototype.playbackDevice = function () {
   return 'plug:volumio';
 };
 
+// What the running unit was launched with. Unreadable is not a mismatch:
+// Peppy notifies after every ALSA rewrite, and treating a failed /proc read
+// as "wrong device" would restart in a loop.
+SoloistConnect.prototype.livePlaybackDevice = function () {
+  const pid = this.daemonPid();
+  if (!pid) return { readable: false, device: '' };
+  let env;
+  try {
+    env = fs.readFileSync('/proc/' + pid + '/environ', 'utf8');
+  } catch (e) {
+    return { readable: false, device: '' };
+  }
+  const line = env.split('\0').find((item) => item.startsWith('APULSE_PLAYBACK_DEVICE='));
+  return { readable: true, device: line ? line.slice('APULSE_PLAYBACK_DEVICE='.length) : '' };
+};
+
 SoloistConnect.prototype.setPeppyMetering = function (enabled) {
   const want = !!enabled;
-  if (this.config.get('peppy_metering') === want) {
-    this.writeEnvFile();
+  if (this.config.get('peppy_metering') !== want) {
+    this.config.set('peppy_metering', want);
+  }
+  this.writeEnvFile();
+  const wantDev = this.playbackDevice();
+  const live = this.livePlaybackDevice();
+  if (!live.readable) {
+    this.logger.info('SoloistConnect: metering live unread want=' + wantDev + ' skip');
     return libQ.resolve();
   }
-  this.config.set('peppy_metering', want);
-  this.writeEnvFile();
-  if (this.state.status === 'play') return libQ.resolve();
-  if (!this.active && !this.ws) return libQ.resolve();
-  return this.startDaemon().then(() => this.connectWebSocket());
+  if (live.device === wantDev) {
+    this.logger.info('SoloistConnect: metering live=' + live.device + ' want=' + wantDev + ' skip');
+    return libQ.resolve();
+  }
+  if (!this.active && !this.ws) {
+    this.logger.info('SoloistConnect: metering live=' + live.device + ' want=' + wantDev + ' skip');
+    return libQ.resolve();
+  }
+  this.logger.info('SoloistConnect: metering live=' + live.device + ' want=' + wantDev + ' restart');
+  return this.restartForMetering();
+};
+
+// Device is chosen at process start. Restart the unit only — do not run
+// startDaemon() (binary download + re-ask Peppy) on a Peppy notify.
+SoloistConnect.prototype.restartForMetering = function () {
+  if (this.meteringRestart) return this.meteringRestart;
+  const self = this;
+  this.clearPendingSeek();
+  this.clearInactiveHold();
+  this.clearQualityRetry();
+  const defer = libQ.defer();
+  this.meteringRestart = defer.promise;
+  exec(
+    `/usr/bin/sudo /bin/systemctl restart ${SERVICE_UNIT}`,
+    { timeout: 30000 },
+    (error) => {
+      self.meteringRestart = null;
+      if (error) {
+        self.logger.error('SoloistConnect: restart for metering failed: ' + error);
+        defer.reject(error);
+      } else {
+        self.connectWebSocket();
+        defer.resolve();
+      }
+    }
+  );
+  return this.meteringRestart;
 };
 
 SoloistConnect.prototype.syncPeppyMeteringFromPeppy = function () {
