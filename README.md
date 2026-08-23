@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.18.**
+> **Alpha, version 0.6.19.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -27,12 +27,12 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. The outer `plug:` converts; the shim does not pick S16/S32.
 
-It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.7**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.8**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
     SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
-    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.7"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.8"]
     Shim -->|"FLOAT32 writei"| Plug["plug:volumio"]
     Plug --> Switch["volumioswitch"]
     Switch --> Out["softvolume or plug"]
@@ -48,7 +48,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.2.7 source. See [`shim/README.md`](shim/README.md). |
+| `shim/` | Pulse shim 0.2.8 source. See [`shim/README.md`](shim/README.md). |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
@@ -273,14 +273,14 @@ Four helpers read the lock:
 
 1. if core already names us, or we already hold the session, clear the yield file and claim. A play from the phone while we hold the session is not a takeover, and `unSetVolatile` would run the volatile callback, which is ours, pausing Soloist on every play.
 2. otherwise, synchronously: set `mpd.ignoreUpdate(true)`, clear the consume-update service, and drop our own volatile registration so `volumioStop` stops the other service rather than pausing us
-3. `volumioStop()`, then wait until no other process holds the device
+3. `volumioStop()`, ask any remaining ALSA holder (from `comm`) to release, then wait until no other process holds the device
 4. claim, and clear the yield file
 
 **Takeover must not yield.** On first play the device is already open, and Peppyalsa negotiates a different period than we do. Releasing our own handle and reopening in that state failed `avail()`. Takeover displaces whoever else holds the device; it does not release ours.
 
 `ignoreUpdate` is why step 2 exists at all. MPD announces its stop, `syncState` reads that as end-of-track and starts the next queue item, and MPD is back on `pcm.volumio` alongside Soloist. ytcr and squeezelite_mc mute it the same way. It is cleared on start, on stop, on yield and in `unsetVolatile`, so it can never be left latched.
 
-The claim is unconditional, including when the wait expires. Refusing to claim was tried: the user pressed play and got a session that belonged to nobody. The shim recovers on its own, reopening the switcher handle if it has gone dead, so the right answer to a slow release is to proceed rather than to stop.
+The UI claim is unconditional, including when the wait expires. Refusing to claim was tried: the user pressed play and got a session that belonged to nobody. The shim does not treat `EBUSY` as a failed first open: corked connect does not open, and a busy card is a wait. The first `pcm open` line is success, or one hard fail that names the holder.
 
 Two state rules that are not obvious and both came from real failures:
 

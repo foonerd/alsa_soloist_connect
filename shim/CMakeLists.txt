@@ -29,7 +29,7 @@ target_link_libraries(pulse PRIVATE ${ALSA_LIBRARIES} m pthread)
 set_target_properties(pulse PROPERTIES
     OUTPUT_NAME pulse
     SOVERSION 0
-    VERSION 0.2.7
+    VERSION 0.2.8
     LINK_FLAGS "-Wl,--version-script=${CMAKE_SOURCE_DIR}/pulse.sym"
 )
 

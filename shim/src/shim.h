@@ -135,6 +135,9 @@ struct pa_stream {
     int clock_running;
     pa_time_event *acquire_ev;
     int acquire_attempts;
+    int busy_waits;
+    int busy_wait_logged;
+    int busy_fail_logged;
     int release_pending;
     int release_keep_position;
     int reopen_pending;

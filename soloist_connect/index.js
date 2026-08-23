@@ -1050,6 +1050,55 @@ SoloistConnect.prototype.alsaHeldByOther = function () {
   return false;
 };
 
+SoloistConnect.prototype.alsaHolders = function () {
+  const us = this.daemonPids();
+  const owners = this.alsaOwnerPids();
+  const holders = [];
+  for (let i = 0; i < owners.length; i++) {
+    const pid = owners[i];
+    if (us.indexOf(pid) >= 0) continue;
+    let comm = '?';
+    try {
+      comm = fs.readFileSync('/proc/' + pid + '/comm', 'utf8').trim();
+    } catch (e) {
+      /* process gone */
+    }
+    holders.push({ pid: pid, comm: comm });
+  }
+  return holders;
+};
+
+// Release whoever /proc/asound says holds playback, by comm. Do not kill.
+// mpd is already stopped by volumioStop. shairport-sync is left: the AirPlay
+// plugin restarts it onto the same card. vtcs (Tidal Connect) is the holder
+// that kept plug:volumio busy on cold-start play (BR8MhQz).
+SoloistConnect.prototype.requestHoldersRelease = function () {
+  const holders = this.alsaHolders();
+  if (!holders.length) return;
+  this.logger.info(
+    'SoloistConnect: alsa held by ' +
+      holders.map((h) => h.comm + '=' + h.pid).join(' ')
+  );
+  for (let i = 0; i < holders.length; i++) {
+    this.requestHolderRelease(holders[i]);
+  }
+};
+
+SoloistConnect.prototype.requestHolderRelease = function (h) {
+  if (!h || !h.comm) return;
+  if (h.comm === 'mpd' || h.comm === 'soloist' || h.comm === 'launch-soloist.sh') {
+    return;
+  }
+  if (h.comm === 'vtcs') {
+    const self = this;
+    exec('/usr/bin/sudo /bin/systemctl stop vtcs.service', { timeout: 5000 }, (error) => {
+      if (error) {
+        self.logger.warn('SoloistConnect: cannot release vtcs: ' + error);
+      }
+    });
+  }
+};
+
 SoloistConnect.prototype.waitUntil = function (pred, timeoutMs) {
   const self = this;
   const defer = libQ.defer();
@@ -1158,6 +1207,7 @@ SoloistConnect.prototype.takeOverPlayback = function () {
 
   stopOthers()
     .then(function () {
+      self.requestHoldersRelease();
       return self.waitUntil(function () { return !this.alsaHeldByOther(); }, 2000);
     })
     .then(claim)

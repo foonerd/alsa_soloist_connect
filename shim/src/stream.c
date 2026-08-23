@@ -1,9 +1,12 @@
 #include "shim.h"
 
+#include <errno.h>
+#include <glob.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Soloist writes 8–32 KiB even when writable_size is smaller. The ring
  * must be larger than tlength or pa_stream_write drops the tail and
@@ -343,6 +346,80 @@ quiet_alsa(const char *file, int line, const char *fn, int err, const char *fmt,
     (void)fmt;
 }
 
+static void
+stream_reset_acquire(pa_stream *s)
+{
+    s->acquire_attempts = 0;
+    s->busy_waits = 0;
+    s->busy_wait_logged = 0;
+    s->busy_fail_logged = 0;
+}
+
+/* Playback nodes held by someone other than this process. Used only to
+ * name a waiter or a single hard fail, not to decide whether to open:
+ * plug:volumio's EBUSY is the truth. */
+static void
+pcm_holders_note(char *buf, size_t buflen)
+{
+    glob_t g;
+    pid_t self = getpid();
+    size_t used = 0;
+    size_t i;
+
+    if (!buf || buflen < 2)
+        return;
+    buf[0] = '\0';
+    if (glob("/proc/asound/card*/pcm*p/sub*/status", 0, NULL, &g) != 0)
+        return;
+    for (i = 0; i < g.gl_pathc; i++) {
+        FILE *f = fopen(g.gl_pathv[i], "r");
+        char line[128];
+        pid_t pid = 0;
+
+        if (!f)
+            continue;
+        while (fgets(line, sizeof(line), f)) {
+            char *p = strstr(line, "owner_pid");
+
+            if (!p)
+                continue;
+            p = strchr(p, ':');
+            if (!p)
+                continue;
+            pid = (pid_t)strtoul(p + 1, NULL, 10);
+            break;
+        }
+        fclose(f);
+        if (pid <= 0 || pid == self)
+            continue;
+        {
+            char commpath[64];
+            char comm[32];
+            FILE *cf;
+            size_t n;
+
+            comm[0] = '?';
+            comm[1] = '\0';
+            snprintf(commpath, sizeof(commpath), "/proc/%ld/comm", (long)pid);
+            cf = fopen(commpath, "r");
+            if (cf) {
+                if (fgets(comm, sizeof(comm), cf)) {
+                    n = strlen(comm);
+                    if (n && comm[n - 1] == '\n')
+                        comm[n - 1] = '\0';
+                }
+                fclose(cf);
+            }
+            n = (size_t)snprintf(buf + used, buflen - used, "%s%s=%ld",
+                                 used ? " " : "", comm, (long)pid);
+            if (n >= buflen - used)
+                break;
+            used += n;
+        }
+    }
+    globfree(&g);
+}
+
 static int
 stream_open_pcm(pa_stream *s)
 {
@@ -365,10 +442,29 @@ stream_open_pcm(pa_stream *s)
     snd_lib_error_set_handler(quiet_alsa);
     err = snd_pcm_open(&s->pcm, dev, SND_PCM_STREAM_PLAYBACK, 0);
     snd_lib_error_set_handler(NULL);
+    if (err == -EBUSY) {
+        char holders[256];
+
+        s->pcm = NULL;
+        s->busy_waits++;
+        pcm_holders_note(holders, sizeof(holders));
+        if (!s->busy_wait_logged) {
+            s->busy_wait_logged = 1;
+            shim_log("pcm wait %s%s%s\n", dev, holders[0] ? " holder=" : "",
+                     holders);
+        }
+        if (s->busy_waits >= 7 && !s->busy_fail_logged) {
+            s->busy_fail_logged = 1;
+            shim_log("pcm open %s failed: Device or resource busy%s%s\n", dev,
+                     holders[0] ? " holder=" : "", holders);
+        }
+        return -1;
+    }
     if (err < 0) {
         shim_log("pcm open %s failed: %s\n", dev, snd_strerror(err));
         return -1;
     }
+    stream_reset_acquire(s);
 
     snd_pcm_hw_params_malloc(&hw);
     snd_pcm_hw_params_any(s->pcm, hw);
@@ -622,7 +718,7 @@ stream_reopen_pcm(pa_stream *s)
     if (shim_yield_requested())
         return;
     s->reopen_wait = 1;
-    s->acquire_attempts = 0;
+    stream_reset_acquire(s);
     shim_log("pcm dead, reopen scheduled\n");
     shim_stream_schedule_acquire(s);
 }
@@ -660,7 +756,7 @@ shim_stream_maybe_yield(pa_stream *s)
         s->c->api->time_free(s->acquire_ev);
         s->acquire_ev = NULL;
     }
-    s->acquire_attempts = 0;
+    stream_reset_acquire(s);
     stream_clock_freeze(s);
     stream_release(s, 1);
 }
@@ -837,14 +933,18 @@ pa_stream_connect_playback(pa_stream *s, const char *dev,
     shim_log("connect corked=%d yield=%d tlength=%u minreq=%u rate=%u\n",
              corked, shim_yield_requested(), s->attr.tlength, s->attr.minreq,
              s->ss.rate);
-    if (shim_yield_requested() || stream_open_pcm(s) < 0) {
+    /* Corked connect does not open. First play uncorks; that open is
+     * the first snd_pcm_open. Opening here is what logged EBUSY while
+     * Spotify was still corked (BR8MhQz). */
+    if (corked) {
         stream_set_state(s, PA_STREAM_READY);
-        if (!corked)
-            shim_stream_schedule_acquire(s);
         return 0;
     }
-    if (corked)
-        shim_stream_set_output(s, 0);
+    if (shim_yield_requested() || stream_open_pcm(s) < 0) {
+        stream_set_state(s, PA_STREAM_READY);
+        shim_stream_schedule_acquire(s);
+        return 0;
+    }
     stream_set_state(s, PA_STREAM_READY);
     return 0;
 }
@@ -860,7 +960,7 @@ cork_run(pa_operation *op)
             s->c->api->time_free(s->acquire_ev);
             s->acquire_ev = NULL;
         }
-        s->acquire_attempts = 0;
+        stream_reset_acquire(s);
         s->want_running = 0;
         stream_clock_freeze(s);
         s->paused = 1;
