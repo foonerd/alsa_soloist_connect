@@ -25,6 +25,8 @@
           "buffer_ms",
           "seek_coalesce_ms",
           "inactive_hold_ms",
+          "quality_retry_ms",
+          "quality_retry_max",
           "output_trim_db",
           "verbose_logging"
         ]
@@ -147,6 +149,38 @@
             },
             {
               "max": 10000
+            }
+          ]
+        },
+        {
+          "id": "quality_retry_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.QUALITY_RETRY_MS",
+          "doc": "TRANSLATE.QUALITY_RETRY_MS_DOC",
+          "value": 300,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 2000
+            }
+          ]
+        },
+        {
+          "id": "quality_retry_max",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.QUALITY_RETRY_MAX",
+          "doc": "TRANSLATE.QUALITY_RETRY_MAX_DOC",
+          "value": 2,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 10
             }
           ]
         },

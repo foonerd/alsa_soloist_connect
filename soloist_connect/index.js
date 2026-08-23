@@ -46,6 +46,10 @@ const QUALITY_TIERS = [
   { max: 450, label: 'Very High' },
   { max: Infinity, label: 'Lossless' },
 ];
+const QUALITY_RETRY_DEFAULT_MS = 300;
+const QUALITY_RETRY_MAX_MS = 2000;
+const QUALITY_RETRY_DEFAULT_COUNT = 2;
+const QUALITY_RETRY_MAX_COUNT = 10;
 const SEEK_COALESCE_DEFAULT_MS = 200;
 const SEEK_COALESCE_MAX_MS = 2000;
 const INACTIVE_HOLD_DEFAULT_MS = 2000;
@@ -88,6 +92,9 @@ function SoloistConnect(context) {
   this.quality = '';       // Spotify tier for the current track, '' until known
   this.qualityUri = '';    // track the last measurement was taken against
   this.qualityPath = '';   // cache file that track was reading from
+  this.qualityRetryTimer = null;
+  this.qualityRetryCount = 0;
+  this.qualityRetryUri = '';
   this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
   this.takeoverInFlight = false;
   this.lastStateRefreshAt = 0; // throttle for unsolicited get_state requests
@@ -220,6 +227,7 @@ SoloistConnect.prototype.onStop = function () {
   const defer = libQ.defer();
   this.clearPendingSeek();
   this.clearInactiveHold();
+  this.clearQualityRetry();
   this.disconnectWebSocket();
   this.unsetVolatile();
   this.setMpdIgnoreUpdate(false);
@@ -633,54 +641,43 @@ SoloistConnect.prototype.fetchAudioSpec = function () {
 // ---------------------------------------------------------------------------
 // Stream quality
 // ---------------------------------------------------------------------------
+//
+// Soloist sends no quality field. ALSA bit depth is FLOAT decoded then
+// converted, so it reads the same for every tier. The only signal is the
+// cache file Soloist has open under /proc/<pid>/fd: size × 8 / duration.
+// Identify by that fd, not mtime. Do not open the file: a live read of the
+// playing cache ended the Connect session (CKJvnbW).
+//
+// Pairing, not "seen twice":
+//   new fd → measure now
+//   last fd × a new uri → refuse (6289411 against the next duration)
+//   two fds on a uri change, last path is one of them → measure the other
+//   two fds, same uri → prefetch, keep the current label
+// A uri change clears the published label so a skip cannot keep the
+// previous track. Empty/stale/ambiguous retries per the operator
+// settings, then stops. A later measurement publishes itself.
 
-// Soloist reports neither codec nor bitrate, and this is not an oversight in
-// our reading of it. The full WebSocket schema is documented, and playback_state
-// carries only status, item, context, position, volume, is_active, options and
-// available_actions; the entity envelope carries identity, visual_identity,
-// parent, creators and playback.duration_ms. There is no quality field anywhere,
-// and others have asked Spotify for one on the developer forum.
-//
-// The bit depth ALSA reports is no guide either. Soloist decodes every quality
-// into FLOAT_LE, and the /proc/asound endpoint shows S24_LE because
-// pcm.softvolume converts, so that field read "24 bit" for lossy and lossless
-// alike.
-//
-// So the cache is the only signal, and it has to be read carefully.
-//
-// Identify the file by open descriptor, not by mtime. Soloist holds the playing
-// track's file open under /proc/<pid>/fd and it follows every skip within a
-// second. Choosing by mtime instead paired a file with the wrong track: the same
-// 6289411 bytes was measured against 185 s and then 232 s, reporting "Very High"
-// and then "High" for one file, because the file came from the cache and the
-// duration from a later track_changed event.
-//
-// Audio payloads live under cache/cache/; the LevelDB metadata store is under
-// data/cache/ and must not match.
-//
-// A track's file is already complete when playback starts: sampled every two
-// seconds over ten, the size did not move. Under rapid skipping no file is
-// unambiguously open -- nine different files in twenty-seven seconds -- so no
-// measurement is taken and the previous label stands.
-SoloistConnect.prototype.updateQuality = function (uri, durationMs) {
-  if (!durationMs || durationMs <= 0) return;
+SoloistConnect.prototype.updateQuality = function (uri, durationMs, isRetry) {
+  if (!uri || !durationMs || durationMs <= 0) return;
 
-  const open = this.openCacheFile();
-  if (!open) return;
+  const files = this.listCacheFiles();
+  const picked = this.pickCacheFile(files, uri);
 
-  // A unique open fd is the playing track. Defer only when the fd just
-  // changed: that is a skip handover, and the duration may still be the
-  // previous track's. The first-URI skip hid the tier until a later event,
-  // which a mid-track resume never sends.
-  if (this.qualityPath && this.qualityPath !== open.path) {
-    this.qualityPath = open.path;
-    this.qualityUri = uri;
+  if (picked.hold) {
+    if (picked.hold !== 'prefetch' && this.holdQualityRetry(uri, durationMs)) {
+      this.logger.info(
+        'SoloistConnect: quality hold: fds=' + files.length + ' ' + picked.hold
+      );
+    }
     return;
   }
-  this.qualityUri = uri;
-  this.qualityPath = open.path;
 
-  const kbps = Math.round((open.size * 8) / (durationMs / 1000) / 1000);
+  if (this.quality && this.qualityUri === uri && this.qualityPath === picked.file.path) {
+    this.clearQualityRetry();
+    return;
+  }
+
+  const kbps = Math.round((picked.file.size * 8) / (durationMs / 1000) / 1000);
   let sample = '';
   for (const tier of QUALITY_TIERS) {
     if (kbps < tier.max) {
@@ -690,55 +687,108 @@ SoloistConnect.prototype.updateQuality = function (uri, durationMs) {
   }
 
   this.logger.info(
-    'SoloistConnect: open ' + open.path + ' ' + open.size + ' bytes over ' +
-    Math.round(durationMs / 1000) + 's = ' + kbps + ' kbps -> ' + sample
+    'SoloistConnect: open ' + picked.file.path + ' ' + picked.file.size +
+    ' bytes over ' + Math.round(durationMs / 1000) + 's = ' + kbps +
+    ' kbps -> ' + sample
   );
 
   this.quality = sample;
+  this.qualityUri = uri;
+  this.qualityPath = picked.file.path;
+  this.clearQualityRetry();
+
+  if (isRetry && this.active && this.volatileSet && this.state.uri === uri) {
+    this.state.bitdepth = this.quality;
+    this.schedulePushState();
+  }
 };
 
-// The cache file Soloist currently has open for reading, which is the track
-// playing now. Null when none is open, when more than one is (a handover
-// between tracks), or when the daemon is not readable.
-SoloistConnect.prototype.openCacheFile = function () {
+SoloistConnect.prototype.pickCacheFile = function (files, uri) {
+  if (!files.length) return { hold: 'empty' };
+
+  if (files.length === 1) {
+    const only = files[0];
+    if (this.qualityPath === only.path && this.qualityUri && this.qualityUri !== uri) {
+      return { hold: 'stale' };
+    }
+    return { file: only };
+  }
+
+  if (this.qualityUri === uri && this.quality) return { hold: 'prefetch' };
+
+  if (this.qualityPath) {
+    const others = files.filter((f) => f.path !== this.qualityPath);
+    if (others.length === 1) return { file: others[0] };
+  }
+  return { hold: 'ambiguous' };
+};
+
+SoloistConnect.prototype.listCacheFiles = function () {
   const pid = this.daemonPid();
-  if (!pid) return null;
+  if (!pid) return [];
 
   let entries;
   try {
     entries = fs.readdirSync('/proc/' + pid + '/fd');
   } catch (e) {
-    return null; // daemon gone, or not ours to read
+    return [];
   }
 
-  const found = [];
+  const byPath = {};
   for (const fd of entries) {
     let target;
     try {
       target = fs.readlinkSync('/proc/' + pid + '/fd/' + fd);
     } catch (e) {
-      continue; // fd closed between readdir and readlink
+      continue;
     }
-    // Audio payload only. The LevelDB metadata store lives under data/cache/
-    // and would otherwise match on the word "cache".
     if (target.indexOf(CACHE_DIR + '/cache/') !== 0) continue;
     if (!target.endsWith('.file')) continue;
-    if (found.indexOf(target) === -1) found.push(target);
+    if (byPath[target]) continue;
+    let size;
+    try {
+      size = fs.statSync(target).size;
+    } catch (e) {
+      continue;
+    }
+    if (!size) continue;
+    byPath[target] = { path: target, size: size };
   }
+  return Object.keys(byPath).map((k) => byPath[k]);
+};
 
-  // Two open files means a handover is in progress and neither is
-  // unambiguously the playing track.
-  if (found.length !== 1) return null;
-
-  let size;
-  try {
-    size = fs.statSync(found[0]).size;
-  } catch (e) {
-    return null;
+SoloistConnect.prototype.holdQualityRetry = function (uri, durationMs) {
+  const delay = this.qualityRetryMs();
+  const max = this.qualityRetryMax();
+  if (delay <= 0 || max <= 0) return false;
+  if (this.qualityRetryUri !== uri) {
+    this.qualityRetryUri = uri;
+    this.qualityRetryCount = 0;
   }
-  if (!size) return null;
+  if (this.qualityRetryCount >= max) return false;
+  if (this.qualityRetryTimer) return false;
+  this.qualityRetryCount += 1;
+  this.qualityRetryTimer = setTimeout(() => {
+    this.qualityRetryTimer = null;
+    this.updateQuality(uri, durationMs, true);
+  }, delay);
+  return true;
+};
 
-  return { path: found[0], size: size };
+SoloistConnect.prototype.clearQualityRetry = function () {
+  if (this.qualityRetryTimer) {
+    clearTimeout(this.qualityRetryTimer);
+    this.qualityRetryTimer = null;
+  }
+  this.qualityRetryCount = 0;
+  this.qualityRetryUri = '';
+};
+
+SoloistConnect.prototype.resetQuality = function () {
+  this.clearQualityRetry();
+  this.quality = '';
+  this.qualityUri = '';
+  this.qualityPath = '';
 };
 
 SoloistConnect.prototype.daemonPid = function () {
@@ -819,6 +869,22 @@ SoloistConnect.prototype.inactiveHoldMs = function () {
   const n = parseInt(this.config.get('inactive_hold_ms'), 10);
   if (!Number.isFinite(n) || n < 0 || n > INACTIVE_HOLD_MAX_MS) {
     return INACTIVE_HOLD_DEFAULT_MS;
+  }
+  return n;
+};
+
+SoloistConnect.prototype.qualityRetryMs = function () {
+  const n = parseInt(this.config.get('quality_retry_ms'), 10);
+  if (!Number.isFinite(n) || n < 0 || n > QUALITY_RETRY_MAX_MS) {
+    return QUALITY_RETRY_DEFAULT_MS;
+  }
+  return n;
+};
+
+SoloistConnect.prototype.qualityRetryMax = function () {
+  const n = parseInt(this.config.get('quality_retry_max'), 10);
+  if (!Number.isFinite(n) || n < 0 || n > QUALITY_RETRY_MAX_COUNT) {
+    return QUALITY_RETRY_DEFAULT_COUNT;
   }
   return n;
 };
@@ -1211,7 +1277,12 @@ SoloistConnect.prototype.applyItem = function (item) {
     .filter(Boolean)
     .join(', ');
   this.state.duration = Math.round((playback.duration_ms || 0) / 1000);
-  this.updateQuality(item.uri || '', playback.duration_ms);
+  const uri = item.uri || '';
+  if (uri && uri !== this.qualityUri) {
+    this.quality = '';
+    if (this.qualityRetryUri !== uri) this.clearQualityRetry();
+  }
+  this.updateQuality(uri, playback.duration_ms);
 
   let art = '';
   const preferred = ['large', 'xlarge', 'default', 'small'];
@@ -1482,6 +1553,7 @@ SoloistConnect.prototype.setVolatile = function () {
 SoloistConnect.prototype.unsetVolatile = function () {
   this.clearPendingSeek();
   this.clearInactiveHold();
+  this.resetQuality();
   if (!this.volatileSet) return;
   this.volatileSet = false;
   this.setMpdIgnoreUpdate(false);
@@ -1525,6 +1597,7 @@ SoloistConnect.prototype.stop = function () {
   }
   this.clearPendingSeek();
   this.clearInactiveHold();
+  this.clearQualityRetry();
   this.logger.info('SoloistConnect: yielding playback');
   this.setMpdIgnoreUpdate(false);
   this.pendingYieldAt = Date.now();
@@ -1560,6 +1633,7 @@ SoloistConnect.prototype.resume = function () {
 
 SoloistConnect.prototype.next = function () {
   this.clearPendingSeek();
+  this.clearQualityRetry();
   this.logVerbose('next fired');
   this.sendCommand({ command: 'skip_next' });
   return libQ.resolve();
@@ -1567,6 +1641,7 @@ SoloistConnect.prototype.next = function () {
 
 SoloistConnect.prototype.previous = function () {
   this.clearPendingSeek();
+  this.clearQualityRetry();
   this.logVerbose('prev fired');
   this.sendCommand({ command: 'skip_prev' });
   return libQ.resolve();
@@ -1765,6 +1840,8 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('buffer_ms', self.config.get('buffer_ms'));
       set('seek_coalesce_ms', self.seekCoalesceMs());
       set('inactive_hold_ms', self.inactiveHoldMs());
+      set('quality_retry_ms', self.qualityRetryMs());
+      set('quality_retry_max', self.qualityRetryMax());
       set('output_trim_db', self.config.get('output_trim_db'));
       set('verbose_logging', self.config.get('verbose_logging') === true);
       self.warnIfSpopStarted();
@@ -1840,6 +1917,26 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Inactive hold must be between 0 and ' + INACTIVE_HOLD_MAX_MS + ' ms.' };
   }
 
+  const qualityRetry = this.parseOptionalMs(
+    data.quality_retry_ms,
+    'quality_retry_ms',
+    QUALITY_RETRY_DEFAULT_MS,
+    QUALITY_RETRY_MAX_MS
+  );
+  if (!qualityRetry.ok) {
+    return { ok: false, message: 'Quality retry wait must be between 0 and ' + QUALITY_RETRY_MAX_MS + ' ms.' };
+  }
+
+  const qualityRetryMax = this.parseOptionalMs(
+    data.quality_retry_max,
+    'quality_retry_max',
+    QUALITY_RETRY_DEFAULT_COUNT,
+    QUALITY_RETRY_MAX_COUNT
+  );
+  if (!qualityRetryMax.ok) {
+    return { ok: false, message: 'Quality retries must be between 0 and ' + QUALITY_RETRY_MAX_COUNT + '.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -1851,6 +1948,8 @@ SoloistConnect.prototype.validateSettings = function (data) {
       buffer_ms: bufferMs,
       seek_coalesce_ms: seekCoalesce.value,
       inactive_hold_ms: inactiveHold.value,
+      quality_retry_ms: qualityRetry.value,
+      quality_retry_max: qualityRetryMax.value,
       output_trim_db: outputTrimDb,
       retain_api_key: !!data.retain_api_key,
       verbose_logging: !!data.verbose_logging,
@@ -1891,6 +1990,8 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('buffer_ms', result.values.buffer_ms);
   this.config.set('seek_coalesce_ms', result.values.seek_coalesce_ms);
   this.config.set('inactive_hold_ms', result.values.inactive_hold_ms);
+  this.config.set('quality_retry_ms', result.values.quality_retry_ms);
+  this.config.set('quality_retry_max', result.values.quality_retry_max);
   this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('verbose_logging', result.values.verbose_logging);

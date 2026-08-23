@@ -31,6 +31,14 @@
     "type": "number",
     "value": 2000
   },
+  "quality_retry_ms": {
+    "type": "number",
+    "value": 300
+  },
+  "quality_retry_max": {
+    "type": "number",
+    "value": 2
+  },
   "output_trim_db": {
     "type": "number",
     "value": 0

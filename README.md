@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.16.**
+> **Alpha, version 0.6.17.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -364,7 +364,7 @@ The measurement is the cache. Soloist writes one content-addressed file per trac
 
 Choosing by mtime instead was wrong, and wrong quietly. The two newest files are usually the current track and its prefetch, but under skipping there are several partial downloads in flight, and the duration comes from the current `track_changed` event while the file came from the cache. The same 6289411 bytes was reported against 185 s and then 232 s, giving Very High and then High for one file.
 
-A measurement is only taken when the same track URI and the same open file are seen twice in succession. During a handover two files are open and nothing is measured. Under rapid skipping the open file changes constantly, nothing is measured, and the previous label stands.
+A new open file is measured immediately. The last file against a new URI is refused: that is the 6289411 pairing, one file measured against two durations. On a skip with two files open, the last path is excluded and the other is measured. A skip clears the published label so the previous track cannot stay on screen. Empty, stale, or ambiguous fds retry using the Quality retry wait and Quality retries settings, then stop. The playing file is never opened; a live header read ended the Connect session.
 
 Measured on device: 333 kbps against Spotify's stated 320 for Very High, and 1654 and 1662 kbps across two different lossless tracks, which is where FLAC at 44.1 kHz sits.
 

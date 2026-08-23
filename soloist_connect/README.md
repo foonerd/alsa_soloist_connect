@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.6.16.**
+> **Alpha, version 0.6.17.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -52,6 +52,8 @@ It belongs to the account that generated it and must not be shared.
 | Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
 | Seek coalesce (ms) | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. |
 | Inactive hold (ms) | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. |
+| Quality retry wait (ms) | 300 | 0 to 2000. How long to wait before looking again when the playing cache file is not ready. 0 does not retry. |
+| Quality retries | 2 | 0 to 10. How many times to look again. 0 does not retry. |
 | Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
 | Verbose logging | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Useful when reporting a problem; noisy, so leave it off otherwise. It changes no playback behaviour. |
 
@@ -71,7 +73,7 @@ No PulseAudio daemon is installed, and nothing else on the system is changed.
 
 Sample rate and quality shown in the Volumio UI are worked out on the device.
 Soloist does not report either, so the sample rate comes from the open ALSA stream and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
-Rapid skipping produces no measurement, so the last known tier stays on screen rather than being replaced by a guess.
+A skip clears the previous tier. If the new file is not open yet, the line has no tier until a measurement lands. The plugin does not read the playing cache file.
 
 ### Sharing the output with other sources
 
