@@ -906,22 +906,26 @@ static void
 flush_run(pa_operation *op)
 {
     pa_stream *s = op->s;
-    snd_pcm_sframes_t av;
+    snd_pcm_sframes_t av = 0;
 
     if (s->rb)
         ring_drop(s->rb, ring_readable(s->rb));
     s->timing.write_index = 0;
     s->timing.read_index = 0;
     stream_clock_reset(s);
+    /*
+     * Ring only. snd_pcm_drop/prepare on a "healthy" Motivo MultiRoom
+     * handle still kills volumioOutput (PslWqYp: second seek → stopped
+     * → logged out). Committed ALSA audio plays out to the buffer bound.
+     */
     if (s->pcm) {
         av = snd_pcm_avail(s->pcm);
         if (s->drop_unsafe ||
-            (av < 0 && av != -EAGAIN && av != -EBADFD)) {
+            (av < 0 && av != -EAGAIN && av != -EBADFD))
             stream_schedule_reopen(s);
-        } else if (snd_pcm_drop(s->pcm) < 0 || snd_pcm_prepare(s->pcm) < 0) {
-            stream_schedule_reopen(s);
-        }
     }
+    shim_log("flush ring pcm=%d drop_unsafe=%d avail=%ld\n",
+             s->pcm != NULL, s->drop_unsafe, (long)av);
     shim_stream_set_output(s, 0);
     if (op->cb)
         ((pa_stream_success_cb_t)op->cb)(s, 1, op->userdata);

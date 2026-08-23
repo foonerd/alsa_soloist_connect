@@ -1,4 +1,4 @@
-# Pulse shim 0.2.6
+# Pulse shim 0.2.7
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
@@ -14,7 +14,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.2.6. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.7. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. There is no tag pin: the source lives in this repository
 and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
@@ -55,10 +55,11 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
   `snd_pcm_hw_params_set_period_size_near`.
 - Cork keeps the PCM. Close only when the yield file appears or the stream
   disconnects. `snd_pcm_close` is never run from the I/O callback.
-- Flush drops and re-prepares a healthy handle. If `prepare` leaves
-  `avail` dead, or drop/prepare fails, the handle is abandoned on the
-  close worker and a new `plug:volumio` is opened after that close
-  finishes. Later flush on that stream reopens instead of drop.
+- Flush discards the Pulse ring and resets the write/read indices. It
+  does not `snd_pcm_drop` or `prepare`. Drop on a healthy Motivo
+  MultiRoom handle killed `volumioOutput` on the second seek. Committed
+  ALSA audio plays out to the output-buffer bound. A dead handle
+  (`drop_unsafe` or a hard `avail` error) still reopens.
 - `pa_context_connect` sets CONNECTING then READY in the same call.
 - The ring is sized in time at the client's frame size.
   `pa_stream_writable_size` is the room left against `tlength`.

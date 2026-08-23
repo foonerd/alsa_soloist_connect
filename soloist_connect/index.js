@@ -46,6 +46,10 @@ const QUALITY_TIERS = [
   { max: 450, label: 'Very High' },
   { max: Infinity, label: 'Lossless' },
 ];
+const SEEK_COALESCE_DEFAULT_MS = 200;
+const SEEK_COALESCE_MAX_MS = 2000;
+const INACTIVE_HOLD_DEFAULT_MS = 2000;
+const INACTIVE_HOLD_MAX_MS = 10000;
 // data/cache dirs are fixed in launch-soloist.sh
 
 module.exports = SoloistConnect;
@@ -87,6 +91,9 @@ function SoloistConnect(context) {
   this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
   this.takeoverInFlight = false;
   this.lastStateRefreshAt = 0; // throttle for unsolicited get_state requests
+  this.seekCommandTimer = null;
+  this.pendingSeekMs = null;
+  this.inactiveHoldTimer = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +218,8 @@ SoloistConnect.prototype.onStart = function () {
 
 SoloistConnect.prototype.onStop = function () {
   const defer = libQ.defer();
+  this.clearPendingSeek();
+  this.clearInactiveHold();
   this.disconnectWebSocket();
   this.unsetVolatile();
   this.setMpdIgnoreUpdate(false);
@@ -756,8 +765,62 @@ SoloistConnect.prototype.daemonPid = function () {
 // caused an endless play/pause loop.
 SoloistConnect.prototype.updateActive = function (msg) {
   if (typeof msg.is_active !== 'boolean') return;
-  if (!this.active && msg.is_active) this.activatedAt = Date.now();
-  this.active = msg.is_active;
+  if (msg.is_active) {
+    if (this.inactiveHoldTimer) {
+      this.clearInactiveHold();
+      this.logger.info('SoloistConnect: hold yield cancelled');
+    }
+    if (!this.active) this.activatedAt = Date.now();
+    this.active = true;
+    return;
+  }
+  if (this.inactiveHoldTimer) return;
+  const holdMs = this.inactiveHoldMs();
+  const yieldNow = () => {
+    this.inactiveHoldTimer = null;
+    this.active = false;
+    this.unsetVolatile();
+  };
+  if (holdMs <= 0) {
+    yieldNow();
+    return;
+  }
+  this.inactiveHoldTimer = setTimeout(yieldNow, holdMs);
+  this.logger.info('SoloistConnect: hold yield: is_active=false hold=' + holdMs + 'ms');
+};
+
+SoloistConnect.prototype.clearInactiveHold = function () {
+  if (!this.inactiveHoldTimer) return;
+  clearTimeout(this.inactiveHoldTimer);
+  this.inactiveHoldTimer = null;
+};
+
+SoloistConnect.prototype.clearPendingSeek = function () {
+  if (this.seekCommandTimer) {
+    clearTimeout(this.seekCommandTimer);
+    this.seekCommandTimer = null;
+  }
+  this.pendingSeekMs = null;
+};
+
+SoloistConnect.prototype.itemUri = function (item) {
+  return (item && item.uri) || '';
+};
+
+SoloistConnect.prototype.seekCoalesceMs = function () {
+  const n = parseInt(this.config.get('seek_coalesce_ms'), 10);
+  if (!Number.isFinite(n) || n < 0 || n > SEEK_COALESCE_MAX_MS) {
+    return SEEK_COALESCE_DEFAULT_MS;
+  }
+  return n;
+};
+
+SoloistConnect.prototype.inactiveHoldMs = function () {
+  const n = parseInt(this.config.get('inactive_hold_ms'), 10);
+  if (!Number.isFinite(n) || n < 0 || n > INACTIVE_HOLD_MAX_MS) {
+    return INACTIVE_HOLD_DEFAULT_MS;
+  }
+  return n;
 };
 
 // ---------------------------------------------------------------------------
@@ -995,16 +1058,16 @@ SoloistConnect.prototype.handleEvent = function (msg) {
     case 'auth_state':
       this.updateActive(msg);
       if (msg.logged_in) this.sendCommand({ command: 'get_state' });
-      if (typeof msg.is_active === 'boolean' && !msg.is_active) this.unsetVolatile();
       break;
 
     case 'playback_state':
       this.updateActive(msg);
       {
         const prevUri = this.state.uri;
+        const incomingUri = this.itemUri(msg.item);
         this.setStatus(msg.status);
         this.applyPosition(msg.position);
-        if (msg.item) this.applyItem(msg.item);
+        if (incomingUri) this.applyItem(msg.item);
         // Active with no item and nothing held: a handover that arrived as a
         // bare state. Ask rather than publish a blank.
         else if (this.active && !this.state.uri) this.requestStateRefresh();
@@ -1013,11 +1076,16 @@ SoloistConnect.prototype.handleEvent = function (msg) {
         // before track_changed. Publishing it is what metavolumio latched.
         const sameTrackBuffering =
           msg.status === 'buffering' &&
-          !!msg.item &&
-          (msg.item.uri || '') === prevUri;
+          incomingUri !== '' &&
+          incomingUri === prevUri;
         if (sameTrackBuffering) {
           this.logVerbose('hold publish: playback_state buffering same uri ' +
             prevUri);
+        } else if (!incomingUri) {
+          // Idle + empty item is a seek blink (PslWqYp 11:07:57). applyItem
+          // on uri="" published play with no title; Soloist was still active.
+          this.logVerbose('hold publish: playback_state empty item uri=' +
+            (this.state.uri || ''));
         } else {
           this.schedulePushState();
         }
@@ -1025,10 +1093,11 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       break;
 
     case 'track_changed':
-      if (msg.item) this.applyItem(msg.item);
+      if (this.itemUri(msg.item)) this.applyItem(msg.item);
       this.logVerbose('track_changed uri=' + (this.state.uri || '') +
         ' title=' + JSON.stringify(this.state.title || ''));
-      this.pushStateNow();
+      if (!this.state.uri) this.requestStateRefresh();
+      else this.pushStateNow();
       break;
 
     case 'playback_changed':
@@ -1058,7 +1127,6 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'device_changed':
       this.updateActive(msg);
-      if (!this.active) this.unsetVolatile();
       break;
 
     case 'position_sync':
@@ -1412,6 +1480,8 @@ SoloistConnect.prototype.setVolatile = function () {
 };
 
 SoloistConnect.prototype.unsetVolatile = function () {
+  this.clearPendingSeek();
+  this.clearInactiveHold();
   if (!this.volatileSet) return;
   this.volatileSet = false;
   this.setMpdIgnoreUpdate(false);
@@ -1453,6 +1523,8 @@ SoloistConnect.prototype.stop = function () {
     this.logger.info('SoloistConnect: ignoring stop echo from volatile setup');
     return libQ.resolve();
   }
+  this.clearPendingSeek();
+  this.clearInactiveHold();
   this.logger.info('SoloistConnect: yielding playback');
   this.setMpdIgnoreUpdate(false);
   this.pendingYieldAt = Date.now();
@@ -1468,6 +1540,7 @@ SoloistConnect.prototype.stop = function () {
 };
 
 SoloistConnect.prototype.pause = function () {
+  this.clearPendingSeek();
   this.logger.info('SoloistConnect: forwarding pause');
   this.sendCommand({ command: 'pause' });
   return libQ.resolve();
@@ -1486,19 +1559,38 @@ SoloistConnect.prototype.resume = function () {
 };
 
 SoloistConnect.prototype.next = function () {
+  this.clearPendingSeek();
   this.logVerbose('next fired');
   this.sendCommand({ command: 'skip_next' });
   return libQ.resolve();
 };
 
 SoloistConnect.prototype.previous = function () {
+  this.clearPendingSeek();
   this.logVerbose('prev fired');
   this.sendCommand({ command: 'skip_prev' });
   return libQ.resolve();
 };
 
 SoloistConnect.prototype.seek = function (positionMs) {
-  this.sendCommand({ command: 'seek', position_ms: Math.round(positionMs) });
+  const ms = Math.round(Number(positionMs));
+  if (!Number.isFinite(ms) || ms < 0) return libQ.resolve();
+  this.pendingSeekMs = ms;
+  if (this.seekCommandTimer) clearTimeout(this.seekCommandTimer);
+  const send = () => {
+    this.seekCommandTimer = null;
+    const pos = this.pendingSeekMs;
+    this.pendingSeekMs = null;
+    if (pos == null || !this.volatileSet) return;
+    this.logVerbose('seek ' + pos + 'ms');
+    this.sendCommand({ command: 'seek', position_ms: pos });
+  };
+  const delay = this.seekCoalesceMs();
+  if (delay <= 0) {
+    send();
+    return libQ.resolve();
+  }
+  this.seekCommandTimer = setTimeout(send, delay);
   return libQ.resolve();
 };
 
@@ -1671,6 +1763,8 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('cache_size_mb', self.config.get('cache_size_mb'));
       setSelect('cache_location', self.config.get('cache_location'), 'disk');
       set('buffer_ms', self.config.get('buffer_ms'));
+      set('seek_coalesce_ms', self.seekCoalesceMs());
+      set('inactive_hold_ms', self.inactiveHoldMs());
       set('output_trim_db', self.config.get('output_trim_db'));
       set('verbose_logging', self.config.get('verbose_logging') === true);
       self.warnIfSpopStarted();
@@ -1726,6 +1820,26 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Cache location must be Disk or RAM.' };
   }
 
+  const seekCoalesce = this.parseOptionalMs(
+    data.seek_coalesce_ms,
+    'seek_coalesce_ms',
+    SEEK_COALESCE_DEFAULT_MS,
+    SEEK_COALESCE_MAX_MS
+  );
+  if (!seekCoalesce.ok) {
+    return { ok: false, message: 'Seek coalesce must be between 0 and ' + SEEK_COALESCE_MAX_MS + ' ms.' };
+  }
+
+  const inactiveHold = this.parseOptionalMs(
+    data.inactive_hold_ms,
+    'inactive_hold_ms',
+    INACTIVE_HOLD_DEFAULT_MS,
+    INACTIVE_HOLD_MAX_MS
+  );
+  if (!inactiveHold.ok) {
+    return { ok: false, message: 'Inactive hold must be between 0 and ' + INACTIVE_HOLD_MAX_MS + ' ms.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -1735,11 +1849,28 @@ SoloistConnect.prototype.validateSettings = function (data) {
       cache_size_mb: cacheSize,
       cache_location: cacheLocation,
       buffer_ms: bufferMs,
+      seek_coalesce_ms: seekCoalesce.value,
+      inactive_hold_ms: inactiveHold.value,
       output_trim_db: outputTrimDb,
       retain_api_key: !!data.retain_api_key,
       verbose_logging: !!data.verbose_logging,
     },
   };
+};
+
+// Absent or empty keeps the stored value so a field the UI did not post cannot
+// fail the rest of the save. A present non-number or out-of-range value fails.
+SoloistConnect.prototype.parseOptionalMs = function (raw, key, fallback, max) {
+  if (raw === undefined || raw === null || raw === '') {
+    const stored = parseInt(this.config.get(key), 10);
+    return {
+      ok: true,
+      value: Number.isFinite(stored) && stored >= 0 && stored <= max ? stored : fallback,
+    };
+  }
+  const n = parseInt(raw, 10);
+  if (isNaN(n) || n < 0 || n > max) return { ok: false };
+  return { ok: true, value: n };
 };
 
 SoloistConnect.prototype.saveSoloistSettings = function (data) {
@@ -1758,9 +1889,12 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('cache_size_mb', result.values.cache_size_mb);
   this.config.set('cache_location', result.values.cache_location);
   this.config.set('buffer_ms', result.values.buffer_ms);
+  this.config.set('seek_coalesce_ms', result.values.seek_coalesce_ms);
+  this.config.set('inactive_hold_ms', result.values.inactive_hold_ms);
   this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('verbose_logging', result.values.verbose_logging);
+  this.clearPendingSeek();
 
   // Say what was actually applied. The requested size is clamped against
   // MemTotal in RAM mode, and RAM mode is refused outright on a board too small

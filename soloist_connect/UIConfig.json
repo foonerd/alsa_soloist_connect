@@ -17,13 +17,15 @@
         "label": "TRANSLATE.SAVE",
         "data": [
           "api_key",
+          "retain_api_key",
           "device_name",
           "initial_volume",
           "cache_size_mb",
           "cache_location",
           "buffer_ms",
+          "seek_coalesce_ms",
+          "inactive_hold_ms",
           "output_trim_db",
-          "retain_api_key",
           "verbose_logging"
         ]
       },
@@ -113,6 +115,38 @@
             },
             {
               "max": 2000
+            }
+          ]
+        },
+        {
+          "id": "seek_coalesce_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.SEEK_COALESCE_MS",
+          "doc": "TRANSLATE.SEEK_COALESCE_MS_DOC",
+          "value": 200,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 2000
+            }
+          ]
+        },
+        {
+          "id": "inactive_hold_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.INACTIVE_HOLD_MS",
+          "doc": "TRANSLATE.INACTIVE_HOLD_MS_DOC",
+          "value": 2000,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 10000
             }
           ]
         },

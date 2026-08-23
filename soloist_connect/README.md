@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.6.15.**
+> **Alpha, version 0.6.16.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -50,6 +50,8 @@ It belongs to the account that generated it and must not be shared.
 | Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
 | Cache location | Disk | Where downloaded audio is kept. **Disk** puts it on the data partition, where it survives a reboot. **RAM** keeps it in memory, which takes cache writes off a slow SD card, but costs that much memory and is emptied on every reboot and plugin restart. A lossless track is roughly 44 MB. Only worth choosing on a board with memory to spare; on a 512 MB board such as a Pi Zero 2 W it is a large share of the total, and the size is capped accordingly. |
 | Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
+| Seek coalesce (ms) | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. |
+| Inactive hold (ms) | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. |
 | Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
 | Verbose logging | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Useful when reporting a problem; noisy, so leave it off otherwise. It changes no playback behaviour. |
 
@@ -125,6 +127,7 @@ A device left powered off past the expiry will refresh on its next start, provid
 
 **Skip and seek are not instant.**
 Volumio's ALSA chain buffers audio ahead of the DAC, and it applies the Output Buffer setting twice, so the delay is roughly double the value you set.
+Seek discards only what is still in the Pulse shim; audio already committed to the device plays out.
 Lowering the setting shortens it; too low risks dropouts on a busy device.
 
 **Lossless needs a moment at the start of a track.**

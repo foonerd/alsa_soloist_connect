@@ -23,6 +23,14 @@
     "type": "number",
     "value": 500
   },
+  "seek_coalesce_ms": {
+    "type": "number",
+    "value": 200
+  },
+  "inactive_hold_ms": {
+    "type": "number",
+    "value": 2000
+  },
   "output_trim_db": {
     "type": "number",
     "value": 0
