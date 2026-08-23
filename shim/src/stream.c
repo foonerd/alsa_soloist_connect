@@ -11,6 +11,8 @@
  * exactly 0.5 s of FLOAT32, which was the old ring size. */
 #define SHIM_WRITE_SLACK 65536
 
+static volatile int pcm_closes_in_flight;
+
 static void stream_release(pa_stream *s, int keep_position);
 static void stream_clock_reset(pa_stream *s);
 static void stream_clock_freeze(pa_stream *s);
@@ -19,6 +21,7 @@ static void stream_clock_start(pa_stream *s);
 static pa_usec_t stream_hw_time(pa_stream *s);
 static void stream_set_state(pa_stream *s, pa_stream_state_t st);
 static int stream_open_pcm(pa_stream *s);
+static void stream_schedule_reopen(pa_stream *s);
 
 static void
 adjust_attr(pa_stream *s, const pa_buffer_attr *in)
@@ -193,6 +196,8 @@ stream_prepare(pa_stream *s)
     }
     avail = snd_pcm_avail(s->pcm);
     if (avail < 0) {
+        /* prepare on the switcher leaves volumioOutput dead (Motivo). */
+        s->drop_unsafe = 1;
         shim_stream_set_output(s, 0);
         if (s->underflow_cb)
             s->underflow_cb(s, s->underflow_cb_userdata);
@@ -227,7 +232,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
         if (avail == -EBADFD || avail == -EAGAIN)
             return;
         shim_log("avail %s\n", snd_strerror((int)avail));
-        stream_prepare(s);
+        if (stream_prepare(s) < 0)
+            stream_schedule_reopen(s);
         return;
     }
     if (avail <= 0) {
@@ -263,8 +269,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
             return;
         memset(s->io_buf, 0, (size_t)avail * s->alsa_fs);
         wr = snd_pcm_writei(s->pcm, s->io_buf, (snd_pcm_uframes_t)avail);
-        if (wr < 0 && wr != -EAGAIN)
-            stream_prepare(s);
+        if (wr < 0 && wr != -EAGAIN && stream_prepare(s) < 0)
+            stream_schedule_reopen(s);
         return;
     }
 
@@ -281,7 +287,8 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     wr = snd_pcm_writei(s->pcm, s->io_buf, got / fs);
     if (wr < 0 && wr != -EAGAIN) {
         shim_log("writei %s, avail=%ld\n", snd_strerror((int)wr), (long)avail);
-        stream_prepare(s);
+        if (stream_prepare(s) < 0)
+            stream_schedule_reopen(s);
         return;
     }
     if (wr > 0) {
@@ -303,6 +310,7 @@ pcm_close_worker(void *arg)
     snd_pcm_nonblock(pcm, 1);
     snd_pcm_drop(pcm);
     snd_pcm_close(pcm);
+    __sync_fetch_and_sub(&pcm_closes_in_flight, 1);
     return NULL;
 }
 
@@ -316,8 +324,11 @@ stream_abandon_pcm(snd_pcm_t *pcm)
         return;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&t, &attr, pcm_close_worker, pcm) != 0)
+    __sync_fetch_and_add(&pcm_closes_in_flight, 1);
+    if (pthread_create(&t, &attr, pcm_close_worker, pcm) != 0) {
+        __sync_fetch_and_sub(&pcm_closes_in_flight, 1);
         shim_log("pcm close worker failed, abandoning handle\n");
+    }
     pthread_attr_destroy(&attr);
 }
 
@@ -347,6 +358,8 @@ stream_open_pcm(pa_stream *s)
     if (s->pcm)
         return 0;
     if (shim_yield_requested())
+        return -1;
+    if (pcm_closes_in_flight)
         return -1;
 
     snd_lib_error_set_handler(quiet_alsa);
@@ -533,6 +546,10 @@ shim_stream_acquire(pa_stream *s)
 {
     if (s->pcm)
         return 0;
+    if (s->reopen_wait)
+        return -1;
+    if (pcm_closes_in_flight)
+        return -1;
     if (shim_yield_requested())
         return -1;
     if (stream_open_pcm(s) < 0)
@@ -551,15 +568,23 @@ acquire_retry(pa_mainloop_api *a, pa_time_event *e, const struct timeval *tv,
     s->acquire_ev = NULL;
     if (a && a->time_free)
         a->time_free(e);
-    if (!s->want_running)
-        return;
-    if (shim_stream_acquire(s) == 0) {
-        s->paused = 0;
-        stream_clock_start(s);
-        shim_stream_set_output(s, 1);
-        return;
+    {
+        int waiting = s->reopen_wait;
+
+        s->reopen_wait = 0;
+        if (!s->want_running && !waiting)
+            return;
+        if (shim_stream_acquire(s) == 0) {
+            if (s->want_running) {
+                s->paused = 0;
+                stream_clock_start(s);
+                shim_stream_set_output(s, 1);
+            }
+            return;
+        }
+        if (s->want_running || waiting)
+            shim_stream_schedule_acquire(s);
     }
-    shim_stream_schedule_acquire(s);
 }
 
 void
@@ -583,6 +608,47 @@ shim_stream_schedule_acquire(pa_stream *s)
     if (s->acquire_attempts < 5)
         s->acquire_attempts++;
     s->acquire_ev = shim_after_ms(s->c->api, ms, acquire_retry, s);
+}
+
+static void
+stream_reopen_pcm(pa_stream *s)
+{
+    stream_detach_io(s);
+    if (s->pcm) {
+        stream_abandon_pcm(s->pcm);
+        s->pcm = NULL;
+    }
+    shim_stream_set_output(s, 0);
+    if (shim_yield_requested())
+        return;
+    s->reopen_wait = 1;
+    s->acquire_attempts = 0;
+    shim_log("pcm dead, reopen scheduled\n");
+    shim_stream_schedule_acquire(s);
+}
+
+static void
+reopen_defer(pa_mainloop_api *a, pa_defer_event *e, void *userdata)
+{
+    pa_stream *s = userdata;
+
+    a->defer_free(e);
+    s->reopen_pending = 0;
+    if (s->ref > 1 && s->state == PA_STREAM_READY)
+        stream_reopen_pcm(s);
+    pa_stream_unref(s);
+}
+
+static void
+stream_schedule_reopen(pa_stream *s)
+{
+    if (!s || s->reopen_pending || !s->c || !s->c->api || !s->c->api->defer_new)
+        return;
+    if (s->state != PA_STREAM_READY)
+        return;
+    s->reopen_pending = 1;
+    s->ref++;
+    s->c->api->defer_new(s->c->api, reopen_defer, s);
 }
 
 void
@@ -840,6 +906,7 @@ static void
 flush_run(pa_operation *op)
 {
     pa_stream *s = op->s;
+    snd_pcm_sframes_t av;
 
     if (s->rb)
         ring_drop(s->rb, ring_readable(s->rb));
@@ -847,8 +914,13 @@ flush_run(pa_operation *op)
     s->timing.read_index = 0;
     stream_clock_reset(s);
     if (s->pcm) {
-        snd_pcm_drop(s->pcm);
-        snd_pcm_prepare(s->pcm);
+        av = snd_pcm_avail(s->pcm);
+        if (s->drop_unsafe ||
+            (av < 0 && av != -EAGAIN && av != -EBADFD)) {
+            stream_schedule_reopen(s);
+        } else if (snd_pcm_drop(s->pcm) < 0 || snd_pcm_prepare(s->pcm) < 0) {
+            stream_schedule_reopen(s);
+        }
     }
     shim_stream_set_output(s, 0);
     if (op->cb)

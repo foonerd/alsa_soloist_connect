@@ -137,6 +137,9 @@ struct pa_stream {
     int acquire_attempts;
     int release_pending;
     int release_keep_position;
+    int reopen_pending;
+    int reopen_wait;
+    int drop_unsafe;
 };
 
 struct ring *ring_new(size_t bytes);

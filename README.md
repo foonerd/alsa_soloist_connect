@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.14.**
+> **Alpha, version 0.6.15.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -27,12 +27,12 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. The outer `plug:` converts; the shim does not pick S16/S32.
 
-It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.5**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.6**. There is no tag pin: the source is this repository, and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
     SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
-    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.5"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.6"]
     Shim -->|"FLOAT32 writei"| Plug["plug:volumio"]
     Plug --> Switch["volumioswitch"]
     Switch --> Out["softvolume or plug"]
@@ -48,7 +48,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.2.5 source. See [`shim/README.md`](shim/README.md). |
+| `shim/` | Pulse shim 0.2.6 source. See [`shim/README.md`](shim/README.md). |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
@@ -131,7 +131,7 @@ The contract is in [`shim/src/stream.c`](shim/src/stream.c). A longer note is in
 
 A flush discards the ring, so both `write_index` and `read_index` reset with it. Leaving `write_index` at its accumulated value made `fill` read as the whole session and `writable_size` return zero permanently. `pa_stream_disconnect` has the same hazard on reconnect.
 
-**Flush drops.** `pa_stream_flush` drops the ring, drops and re-prepares the device, and resets the indices. A no-op flush left committed audio playing out across a skip.
+**Flush drops a healthy handle.** `pa_stream_flush` drops the ring and, while `avail` still works, drops and re-prepares the device. A no-op flush left committed audio playing out across a skip. If `prepare` leaves `avail` dead (volumioswitch target failed its update check), or drop/prepare itself fails, the shim abandons that PCM on the existing close worker and opens a new `plug:volumio` after the close finishes. Later flush on that stream reopens instead of drop: drop on Motivo MultiRoom is what killed `volumioOutput` on seek.
 
 **Cork is not a close.** Pause keeps the PCM so resume is instant. Closing on cork creates a new device instance, `hw_ptr` restarts at zero, and the reopen races whoever took the chain. A write gap is not a release either. The close happens only when the plugin writes `APULSE_YIELD_PATH`, or on disconnect.
 
@@ -139,7 +139,7 @@ A flush discards the ring, so both `write_index` and `read_index` reset with it.
 
 **Stop is bounded.** `snd_pcm_drop` / `close` run on a detached worker. `pa_threaded_mainloop_stop` timed-joins (2 s) and abandons the loop thread rather than joining a closer that never returns. The I/O callback never closes the PCM.
 
-**An xrun is `snd_pcm_prepare` with the playhead held.** Closing from the I/O callback SIGSEGV'd Soloist. Resetting the clock to zero was worse than the original stop: `read_index` then advanced only at underruns. The audio ALSA held is gone, so `read_index` becomes `write_index` less what is still in the ring and was never offered.
+**An xrun is `snd_pcm_prepare` with the playhead held.** Closing from the I/O callback SIGSEGV'd Soloist. Resetting the clock to zero was worse than the original stop: `read_index` then advanced only at underruns. The audio ALSA held is gone, so `read_index` becomes `write_index` less what is still in the ring and was never offered. If `prepare` succeeds and `avail` is still dead, that is not an xrun: it is a dead switcher target, and the reopen path above runs. The I/O callback never closes the PCM; reopen is deferred onto the Pulse loop.
 
 Environment names stay `APULSE_*`. They are historical; renaming is a later change. See [`shim/README.md`](shim/README.md).
 
@@ -290,7 +290,7 @@ Two state rules that are not obvious and both came from real failures:
 
 Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
 
-The corresponding half is in the shim: the PCM survives cork, flush and uncork, uncork asks for data and starts the device again, and the close happens only when the yield file appears.
+The corresponding half is in the shim: the PCM survives cork and uncork. Flush keeps the same handle while it is healthy. After a dead switcher target, flush reopens. The close that yields the device still happens only when the yield file appears.
 
 ---
 
