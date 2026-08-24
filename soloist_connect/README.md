@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.6.19.**
+> **Alpha, version 0.7.0.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -42,22 +42,41 @@ It belongs to the account that generated it and must not be shared.
 
 ## Settings
 
-| Setting | Default | Notes |
-|---|---|---|
-| API key | empty | From the Spotify for Developers dashboard. Stored on the device with mode 0600. |
-| Device name | `Volumio` | The name shown in the Spotify app. |
-| Initial volume | 50 | 0 to 100. |
-| Cache size (MB) | 1024 | `0` means no limit. Other values must be 100 or more. |
-| Cache location | Disk | Where downloaded audio is kept. **Disk** puts it on the data partition, where it survives a reboot. **RAM** keeps it in memory, which takes cache writes off a slow SD card, but costs that much memory and is emptied on every reboot and plugin restart. A lossless track is roughly 44 MB. Only worth choosing on a board with memory to spare; on a 512 MB board such as a Pi Zero 2 W it is a large share of the total, and the size is capped accordingly. |
-| Output buffer (ms) | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Lower responds faster to skip, seek and pause; too low risks dropouts. |
-| Seek coalesce (ms) | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. |
-| Inactive hold (ms) | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. |
-| Quality retry wait (ms) | 300 | 0 to 2000. How long to wait before looking again when the playing cache file is not ready. 0 does not retry. |
-| Quality retries | 2 | 0 to 10. How many times to look again. 0 does not retry. |
-| Output trim (dB) | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Use it if this source arrives quieter or louder than the rest of the system. It does not move the volume knob. |
-| Verbose logging | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Useful when reporting a problem; noisy, so leave it off otherwise. It changes no playback behaviour. |
+The page is split by what a save does. **Save & Restart Soloist** is for Spotify identity, sound, cache and diagnostics: those values are read by the daemon, so playback stops and comes back. **Save** is for the Volumio queue switches and the timing fields: this process reads them on the next row or the next event, and Soloist keeps playing.
 
-The settings page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
+| Setting | Section | Default | Notes |
+|---|---|---|---|
+| API key | Spotify | empty | From the Spotify for Developers dashboard. Stored on the device with mode 0600. Saving restarts. |
+| Retain my API key | Spotify | on | Keeps the key and paired session across uninstall. |
+| Device name | Spotify | `Volumio` | The name shown in the Spotify app. Saving restarts. |
+| Play Spotify tracks from the Volumio queue | Volumio queue | off | A `soloist_connect` row in a Volumio playlist or queue plays through Soloist. Off skips that row and the list continues. Does not restart. |
+| Let a queued track play on the active Spotify device | Volumio queue | off | Only with the setting above. If the session sits on a phone or another speaker, the row plays there instead of being skipped. The list may wait on it. Does not restart. |
+| Initial volume | Sound | 50 | 0 to 100. Saving restarts. |
+| Output trim (dB) | Sound | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Saving restarts. |
+| Output buffer (ms) | Sound | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Saving restarts. |
+| Cache location | Cache | Disk | **Disk** survives a reboot. **RAM** takes writes off a slow SD card, costs that much memory, and is emptied on every reboot and daemon restart. Saving restarts. |
+| Cache size (MB) | Cache | 1024 | `0` means no limit. Other values must be 100 or more. In RAM mode the size is capped to what the board can spare. Saving restarts. |
+| Seek coalesce (ms) | Timing | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. Does not restart. |
+| Inactive hold (ms) | Timing | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. Does not restart. |
+| Quality retry wait (ms) | Timing | 300 | 0 to 2000. How long to wait before looking again when the playing cache file is not ready. 0 does not retry. Does not restart. |
+| Quality retries | Timing | 2 | 0 to 10. How many times to look again. 0 does not retry. Does not restart. |
+| Verbose logging | Diagnostics | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics. Saving restarts so the shim picks it up. |
+
+The page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
+
+---
+
+## Mixed playlists
+
+This plugin is still a Spotify Connect speaker first. From 0.7.0 it can also play a Spotify **track** that is already sitting in a Volumio playlist or queue.
+
+Turn on **Play Spotify tracks from the Volumio queue**. The row must say `service: "soloist_connect"`. Entries saved for the stock Spotify plugin say `spop` and are not played or rewritten. A paired Spotify session is enough; the app does not have to be open. If there is no session, or another device holds it, that row is skipped and the list moves on.
+
+Names and artwork come from tracks Soloist has already reported this session. A URI it has never seen queues with a placeholder until it starts.
+
+Soloist's own queue is not used. Next and previous walk the Volumio list. When the Spotify row ends, Soloist is paused and the DAC is released so the next service (local, UPnP, web radio) can open it.
+
+Do not turn on **Let a queued track play on the active Spotify device** unless you want a row to play on the phone or another speaker when the session is not here. Off is the safe default.
 
 ---
 
@@ -139,7 +158,10 @@ At lossless the plugin buffers half a second of audio before the DAC, which is w
 It is downloaded from Spotify's official CDN during install, because Spotify does not permit redistributing it.
 
 **A RAM cache is emptied on every restart.**
-That is what it is: memory, not storage. Saving settings restarts the daemon, so the cache is discarded then too, and the next track is downloaded again. It is worth choosing when the boot medium is slow, not otherwise.
+That is what it is: memory, not storage. Saving Spotify, Sound, Cache or Diagnostics restarts the daemon, so the cache is discarded then too, and the next track is downloaded again. Saving the Volumio queue or Timing sections does not. RAM is worth choosing when the boot medium is slow, not otherwise.
+
+**A mixed-playlist Spotify row needs this plugin's service name.**
+`soloist_connect`, not `spop`. Old playlists are not rewritten. With queue playback off, those rows still appear and are skipped when reached.
 
 ---
 
@@ -178,6 +200,7 @@ aplay -L | grep volumio
 Common cases:
 
 - **Nothing plays and the log shows exit code 10.** The Soloist build expired. Press the update button in the plugin settings.
+- **A Spotify row in a playlist does nothing, or the list jumps past it.** Queue playback is off by default. The row must be `soloist_connect`, not `spop`. A paired session is required; if another device holds it the row is skipped unless remote play is on.
 - **The device does not appear in the Spotify app.** Check that the API key was saved, that the daemon is running, and that the device and phone are on the same network segment.
 - **Another source will not start while Spotify is connected.** Should not happen from 0.4.0 onwards. If it does, `journalctl -u volumio -f | grep -i soloist` around the moment you switch will show whether the device was released.
 - **Install failed with "Pulse shim ... is not in the plugin package".** The package was built without the libraries for this architecture. Report it, including the architecture reported by `dpkg --print-architecture`.

@@ -4,31 +4,22 @@
   },
   "sections": [
     {
-      "id": "soloist_settings",
+      "id": "soloist_spotify",
       "element": "section",
-      "label": "TRANSLATE.SETTINGS",
+      "label": "TRANSLATE.SECTION_SPOTIFY",
       "icon": "fa-spotify",
+      "description": "TRANSLATE.SECTION_SPOTIFY_DESC",
       "onSave": {
         "type": "controller",
         "endpoint": "music_service/soloist_connect",
         "method": "saveSoloistSettings"
       },
       "saveButton": {
-        "label": "TRANSLATE.SAVE",
+        "label": "TRANSLATE.SAVE_RESTART",
         "data": [
           "api_key",
           "retain_api_key",
-          "device_name",
-          "initial_volume",
-          "cache_size_mb",
-          "cache_location",
-          "buffer_ms",
-          "seek_coalesce_ms",
-          "inactive_hold_ms",
-          "quality_retry_ms",
-          "quality_retry_max",
-          "output_trim_db",
-          "verbose_logging"
+          "device_name"
         ]
       },
       "content": [
@@ -54,7 +45,64 @@
           "label": "TRANSLATE.DEVICE_NAME",
           "doc": "TRANSLATE.DEVICE_NAME_DOC",
           "value": "Volumio"
+        }
+      ]
+    },
+    {
+      "id": "soloist_queue",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_QUEUE",
+      "icon": "fa-list",
+      "description": "TRANSLATE.SECTION_QUEUE_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE",
+        "data": [
+          "queue_playback",
+          "queue_remote_playback"
+        ]
+      },
+      "content": [
+        {
+          "id": "queue_playback",
+          "element": "switch",
+          "label": "TRANSLATE.QUEUE_PLAYBACK",
+          "doc": "TRANSLATE.QUEUE_PLAYBACK_DOC",
+          "value": false
         },
+        {
+          "id": "queue_remote_playback",
+          "element": "switch",
+          "label": "TRANSLATE.QUEUE_REMOTE_PLAYBACK",
+          "doc": "TRANSLATE.QUEUE_REMOTE_PLAYBACK_DOC",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "soloist_sound",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_SOUND",
+      "icon": "fa-volume-up",
+      "description": "TRANSLATE.SECTION_SOUND_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE_RESTART",
+        "data": [
+          "initial_volume",
+          "output_trim_db",
+          "buffer_ms"
+        ]
+      },
+      "content": [
         {
           "id": "initial_volume",
           "element": "input",
@@ -72,18 +120,58 @@
           ]
         },
         {
-          "id": "cache_size_mb",
+          "id": "output_trim_db",
           "element": "input",
           "type": "number",
-          "label": "TRANSLATE.CACHE_SIZE",
-          "doc": "TRANSLATE.CACHE_SIZE_DOC",
-          "value": 1024,
+          "label": "TRANSLATE.OUTPUT_TRIM_DB",
+          "doc": "TRANSLATE.OUTPUT_TRIM_DB_DOC",
+          "value": 0,
           "attributes": [
             {
-              "min": 0
+              "min": -12
+            },
+            {
+              "max": 12
             }
           ]
         },
+        {
+          "id": "buffer_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.BUFFER_MS",
+          "doc": "TRANSLATE.BUFFER_MS_DOC",
+          "value": 500,
+          "attributes": [
+            {
+              "min": 100
+            },
+            {
+              "max": 2000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "soloist_cache",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_CACHE",
+      "icon": "fa-hdd-o",
+      "description": "TRANSLATE.SECTION_CACHE_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE_RESTART",
+        "data": [
+          "cache_location",
+          "cache_size_mb"
+        ]
+      },
+      "content": [
         {
           "id": "cache_location",
           "element": "select",
@@ -105,21 +193,41 @@
           ]
         },
         {
-          "id": "buffer_ms",
+          "id": "cache_size_mb",
           "element": "input",
           "type": "number",
-          "label": "TRANSLATE.BUFFER_MS",
-          "doc": "TRANSLATE.BUFFER_MS_DOC",
-          "value": 500,
+          "label": "TRANSLATE.CACHE_SIZE",
+          "doc": "TRANSLATE.CACHE_SIZE_DOC",
+          "value": 1024,
           "attributes": [
             {
-              "min": 100
-            },
-            {
-              "max": 2000
+              "min": 0
             }
           ]
-        },
+        }
+      ]
+    },
+    {
+      "id": "soloist_timing",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_TIMING",
+      "icon": "fa-sliders",
+      "description": "TRANSLATE.SECTION_TIMING_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE",
+        "data": [
+          "seek_coalesce_ms",
+          "inactive_hold_ms",
+          "quality_retry_ms",
+          "quality_retry_max"
+        ]
+      },
+      "content": [
         {
           "id": "seek_coalesce_ms",
           "element": "input",
@@ -183,23 +291,27 @@
               "max": 10
             }
           ]
-        },
-        {
-          "id": "output_trim_db",
-          "element": "input",
-          "type": "number",
-          "label": "TRANSLATE.OUTPUT_TRIM_DB",
-          "doc": "TRANSLATE.OUTPUT_TRIM_DB_DOC",
-          "value": 0,
-          "attributes": [
-            {
-              "min": -12
-            },
-            {
-              "max": 12
-            }
-          ]
-        },
+        }
+      ]
+    },
+    {
+      "id": "soloist_diagnostics",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_DIAGNOSTICS",
+      "icon": "fa-bug",
+      "description": "TRANSLATE.SECTION_DIAGNOSTICS_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "saveSoloistSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE_RESTART",
+        "data": [
+          "verbose_logging"
+        ]
+      },
+      "content": [
         {
           "id": "verbose_logging",
           "element": "switch",

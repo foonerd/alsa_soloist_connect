@@ -54,6 +54,17 @@ const SEEK_COALESCE_DEFAULT_MS = 200;
 const SEEK_COALESCE_MAX_MS = 2000;
 const INACTIVE_HOLD_DEFAULT_MS = 2000;
 const INACTIVE_HOLD_MAX_MS = 10000;
+// How close to the end of a queue-mode row a buffering event has to be for it
+// to mean "our track just finished" rather than a mid-track rebuffer.
+const QUEUE_END_WINDOW_MS = 1500;
+// Cap on the URI -> item metadata harvested from Soloist events, so a long
+// session cannot grow the map without bound.
+const TRACK_CACHE_MAX = 500;
+// How long a queue row may sit between "play sent" and "audio playing" before
+// the row is given up and core moves on. A play issued while another device
+// holds the Connect session produces no local playback and no event, so
+// without this the mixed list waits for a row that will never start.
+const QUEUE_START_TIMEOUT_MS = 8000;
 // data/cache dirs are fixed in launch-soloist.sh
 
 module.exports = SoloistConnect;
@@ -68,6 +79,11 @@ function SoloistConnect(context) {
   this.ws = null;
   this.wsReconnectTimer = null;
   this.active = false; // Soloist is the active Spotify Connect device
+  // The last is_active the daemon reported, recorded without the hold delay.
+  // `active` deliberately lags by inactive_hold_ms so a blink during a seek
+  // does not end a Connect session; that lag makes it the wrong thing to ask
+  // before starting a queue row.
+  this.deviceActive = false;
   this.activatedAt = 0; // when Soloist last became active
   this.lastPlayTransitionAt = 0; // when status last flipped to 'play'
   this.volatileSet = false;
@@ -101,6 +117,15 @@ function SoloistConnect(context) {
   this.seekCommandTimer = null;
   this.pendingSeekMs = null;
   this.inactiveHoldTimer = null;
+  this.loggedIn = false; // stored Spotify session; a queue row needs one
+  // Queue mode: Volumio's queue owns the playhead, not Spotify Connect.
+  this.queueMode = false;
+  this.queueUri = '';   // the URI core asked us to play for this row
+  this.queueIndex = -1; // the queue position that row occupies
+  this.queueStartTimer = null; // waiting for the row we asked for to start
+  // uri -> Soloist queue item, harvested from events. explodeUri has no
+  // Spotify Web API to ask, so a playlist row shows what we have already seen.
+  this.trackCache = new Map();
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +253,8 @@ SoloistConnect.prototype.onStop = function () {
   this.clearPendingSeek();
   this.clearInactiveHold();
   this.clearQualityRetry();
+  this.clearQueueStartTimer();
+  this.leaveQueueMode('plugin stop', false);
   this.disconnectWebSocket();
   this.unsetVolatile();
   this.setMpdIgnoreUpdate(false);
@@ -502,6 +529,8 @@ SoloistConnect.prototype.restartForMetering = function () {
   this.clearPendingSeek();
   this.clearInactiveHold();
   this.clearQualityRetry();
+  this.clearQueueStartTimer();
+  this.leaveQueueMode('metering restart', false);
   const defer = libQ.defer();
   this.meteringRestart = defer.promise;
   exec(
@@ -751,7 +780,7 @@ SoloistConnect.prototype.updateQuality = function (uri, durationMs, isRetry) {
   this.qualityPath = picked.file.path;
   this.clearQualityRetry();
 
-  if (isRetry && this.active && this.volatileSet && this.state.uri === uri) {
+  if (isRetry && this.active && this.owningPlayback() && this.state.uri === uri) {
     this.state.bitdepth = this.quality;
     this.schedulePushState();
   }
@@ -869,6 +898,7 @@ SoloistConnect.prototype.daemonPid = function () {
 // caused an endless play/pause loop.
 SoloistConnect.prototype.updateActive = function (msg) {
   if (typeof msg.is_active !== 'boolean') return;
+  this.deviceActive = msg.is_active;
   if (msg.is_active) {
     if (this.inactiveHoldTimer) {
       this.clearInactiveHold();
@@ -879,6 +909,10 @@ SoloistConnect.prototype.updateActive = function (msg) {
     return;
   }
   if (this.inactiveHoldTimer) return;
+  // Queue mode does not yield on inactive. is_active is about which device the
+  // phone points at, and the play was ours, so it says nothing about who owns
+  // the playhead here.
+  if (this.queueMode) return;
   const holdMs = this.inactiveHoldMs();
   const yieldNow = () => {
     this.inactiveHoldTimer = null;
@@ -1226,6 +1260,7 @@ SoloistConnect.prototype.logVerbose = function (msg) {
 SoloistConnect.prototype.handleEvent = function (msg) {
   switch (msg.type) {
     case 'auth_state':
+      this.loggedIn = msg.logged_in === true;
       this.updateActive(msg);
       if (msg.logged_in) this.sendCommand({ command: 'get_state' });
       break;
@@ -1235,6 +1270,8 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       {
         const prevUri = this.state.uri;
         const incomingUri = this.itemUri(msg.item);
+        if (incomingUri) this.cacheItem(msg.item);
+        if (this.checkQueueRow(msg, incomingUri)) break;
         this.setStatus(msg.status);
         this.applyPosition(msg.position);
         if (incomingUri) this.applyItem(msg.item);
@@ -1263,6 +1300,17 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       break;
 
     case 'track_changed':
+      // Backstop for the end of a queue row: 110 ms of lead on the measured
+      // runs, against 380 ms for the buffering event checkQueueRow watches.
+      if (
+        this.queueMode &&
+        this.itemUri(msg.item) &&
+        this.itemUri(msg.item) !== this.queueUri
+      ) {
+        this.cacheItem(msg.item);
+        this.endQueueRow('track_changed to ' + this.itemUri(msg.item));
+        break;
+      }
       if (this.itemUri(msg.item)) this.applyItem(msg.item);
       this.logVerbose('track_changed uri=' + (this.state.uri || '') +
         ' title=' + JSON.stringify(this.state.title || ''));
@@ -1271,6 +1319,12 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       break;
 
     case 'playback_changed':
+      // Same end-of-row idle as checkQueueRow: only after the row has started,
+      // so a leftover idle between play-sent and first audio is ignored.
+      if (this.queueMode && msg.status === 'idle' && !this.queueStartTimer) {
+        this.endQueueRow('playback_changed idle');
+        break;
+      }
       this.setStatus(msg.status);
       // Status-only event. On a source switch back to Soloist, unsetVolatile
       // has already reset this.state, so there is nothing to show.
@@ -1282,6 +1336,17 @@ SoloistConnect.prototype.handleEvent = function (msg) {
           ' uri=' + this.state.uri);
       } else {
         this.pushStateNow();
+      }
+      break;
+
+    case 'queue_changed':
+      // Free metadata for URIs we may later be asked to queue. explodeUri has
+      // no Spotify Web API to fall back on.
+      {
+        const rows = [].concat(msg.previous || [], msg.upcoming || []);
+        for (const row of rows) {
+          if (row && row.item) this.cacheItem(row.item);
+        }
       }
       break;
 
@@ -1308,7 +1373,7 @@ SoloistConnect.prototype.handleEvent = function (msg) {
         const before = this.currentSeekMs();
         this.applyPosition(msg.position);
         this.state.seek = this.currentSeekMs();
-        if (this.volatileSet && Math.abs(this.state.seek - before) > 2000) {
+        if (this.owningPlayback() && Math.abs(this.state.seek - before) > 2000) {
           if (this.state.seek <= 2000) {
             this.logVerbose('hold publish: position_sync reset to ' +
               this.state.seek + 'ms uri=' + (this.state.uri || ''));
@@ -1339,7 +1404,14 @@ SoloistConnect.prototype.setStatus = function (soloistStatus) {
     // /proc/asound reports "closed", so the sample rate has to be read here or
     // it is never read at all.
     this.fetchAudioSpec();
-    this.takeOverPlayback();
+    // In queue mode core owns the playhead, so claiming volatile here is what
+    // would take next/prev and end-of-track away from the mixed list. The
+    // device is already ours; only make sure the shim is not still being told
+    // to release it.
+    if (this.queueMode) {
+      this.clearAlsaYield();
+      this.clearQueueStartTimer();
+    } else this.takeOverPlayback();
   }
   this.state.status = mapped;
   this.syncSeekTimer();
@@ -1354,39 +1426,25 @@ SoloistConnect.prototype.mapStatus = function (s) {
   // idle is the gap between Spotify tracks, not a source stop. Publishing
   // it as stop is the same end-of-block path that auto-starts the next
   // queue item — and our stop() then pauses Soloist, so nothing advances.
-  if (s === 'idle') return this.state.status === 'play' ? 'play' : 'stop';
+  //
+  // In queue mode that path is exactly what we want: advancing the mixed list
+  // is core's job, and idle there means our row is over.
+  if (s === 'idle') {
+    if (this.queueMode) return 'stop';
+    return this.state.status === 'play' ? 'play' : 'stop';
+  }
   return 'stop';
 };
 
-SoloistConnect.prototype.applyItem = function (item) {
+// Decorations to flat metadata. Split out of applyItem so a queue row and the
+// now-playing line read the same fields from the same parser.
+SoloistConnect.prototype.itemMeta = function (item) {
   const dec = (item && item.decorations) || {};
   const identity = dec.identity || {};
   const parent = dec.parent && dec.parent.entity;
   const creators = dec.creators || [];
   const playback = dec.playback || {};
   const covers = (dec.visual_identity && dec.visual_identity.cover) || [];
-
-  this.state.uri = item.uri || '';
-  this.state.title = identity.name || '';
-  this.state.album =
-    (parent && parent.decorations && parent.decorations.identity
-      ? parent.decorations.identity.name
-      : '') || '';
-  this.state.artist = creators
-    .map((c) =>
-      c.entity && c.entity.decorations && c.entity.decorations.identity
-        ? c.entity.decorations.identity.name
-        : ''
-    )
-    .filter(Boolean)
-    .join(', ');
-  this.state.duration = Math.round((playback.duration_ms || 0) / 1000);
-  const uri = item.uri || '';
-  if (uri && uri !== this.qualityUri) {
-    this.quality = '';
-    if (this.qualityRetryUri !== uri) this.clearQualityRetry();
-  }
-  this.updateQuality(uri, playback.duration_ms);
 
   let art = '';
   const preferred = ['large', 'xlarge', 'default', 'small'];
@@ -1398,7 +1456,98 @@ SoloistConnect.prototype.applyItem = function (item) {
     }
   }
   if (!art && covers.length) art = covers[0].url;
-  this.state.albumart = art || '/albumart';
+
+  return {
+    uri: (item && item.uri) || '',
+    title: identity.name || '',
+    album:
+      (parent && parent.decorations && parent.decorations.identity
+        ? parent.decorations.identity.name
+        : '') || '',
+    artist: creators
+      .map((c) =>
+        c.entity && c.entity.decorations && c.entity.decorations.identity
+          ? c.entity.decorations.identity.name
+          : ''
+      )
+      .filter(Boolean)
+      .join(', '),
+    durationMs: playback.duration_ms || 0,
+    albumart: art || '/albumart',
+  };
+};
+
+SoloistConnect.prototype.applyItem = function (item) {
+  const meta = this.itemMeta(item);
+  const uri = meta.uri;
+
+  this.state.uri = uri;
+  this.state.title = meta.title;
+  this.state.album = meta.album;
+  this.state.artist = meta.artist;
+  this.state.duration = Math.round(meta.durationMs / 1000);
+  if (uri && uri !== this.qualityUri) {
+    this.quality = '';
+    if (this.qualityRetryUri !== uri) this.clearQualityRetry();
+  }
+  this.updateQuality(uri, meta.durationMs);
+  this.state.albumart = meta.albumart;
+  this.cacheItem(item);
+  this.updateQueueRow(meta);
+};
+
+// In queue mode the UI does not read what we publish.
+// CoreStateMachine::getState returns trackBlock.name, .artist, .album,
+// .albumart and .duration straight from the queue row for a non-volatile
+// service; our pushed state only carries seek and status. explodeUri can only
+// fill that row from URIs Soloist has already named this session, so a track it
+// has never mentioned queues with no artwork, the placeholder title and
+// duration 0, which also leaves the seek bar with no end. Write the real
+// metadata into the row the moment the daemon tells us what it is.
+SoloistConnect.prototype.updateQueueRow = function (meta) {
+  if (!this.queueMode || !meta || !meta.uri || meta.uri !== this.queueUri) return;
+  const sm = this.context.coreCommand.stateMachine;
+  try {
+    const queue = sm.playQueue && sm.playQueue.arrayQueue;
+    if (!queue) return;
+    const row = queue[sm.currentPosition];
+    if (!row || row.uri !== meta.uri) return;
+
+    let changed = false;
+    const set = (key, value) => {
+      if (value && row[key] !== value) {
+        row[key] = value;
+        changed = true;
+      }
+    };
+    set('name', meta.title);
+    set('title', meta.title);
+    set('artist', meta.artist);
+    set('album', meta.album);
+    if (meta.albumart && meta.albumart !== '/albumart') set('albumart', meta.albumart);
+    const duration = Math.round(meta.durationMs / 1000);
+    let durationChanged = false;
+    if (duration && row.duration !== duration) {
+      row.duration = duration;
+      durationChanged = true;
+      changed = true;
+    }
+    if (!changed) return;
+
+    this.logVerbose('queue row metadata filled for ' + meta.uri);
+    if (typeof sm.updateTrackBlock === 'function') sm.updateTrackBlock();
+    // play() already started increasePlaybackTimer. startPlaybackTimer()
+    // again would arm a second loop on the same currentSeek (nStartTime is
+    // ignored; the old timeout is not cancelled). Write the duration the
+    // running loop reads.
+    if (durationChanged) sm.currentSongDuration = duration * 1000;
+    if (typeof sm.playQueue.saveQueue === 'function') sm.playQueue.saveQueue();
+    if (typeof this.commandRouter.volumioPushQueue === 'function') {
+      this.commandRouter.volumioPushQueue(queue);
+    }
+  } catch (e) {
+    this.logger.error('SoloistConnect: could not fill the queue row: ' + e);
+  }
 };
 
 SoloistConnect.prototype.applyPosition = function (pos) {
@@ -1572,13 +1721,24 @@ SoloistConnect.prototype.stopSeekTimer = function () {
   this.seekTimer = null;
 };
 
+// Do we own what is coming out of the DAC right now?
+//
+// volatileSet alone answered this until queue mode existed, and every place
+// that asked the question in those terms silently stopped working for a queue
+// row: the seek command was dropped, a seek jump was never republished, mixer
+// volume was parked, and a quality retry never reached the UI. Ownership is
+// the question, not which of the two modes we are in.
+SoloistConnect.prototype.owningPlayback = function () {
+  return this.volatileSet || this.queueMode;
+};
+
 SoloistConnect.prototype.pushState = function () {
   if (!this.active) return;
   // Only publish while we are the volatile service. setVolatile is asserted
   // once, on the takeover edge in updateActive, not here: calling it from
   // pushState meant every event from a still-connected phone re-claimed the
   // session, so our metadata overwrote whatever the user had switched to.
-  if (!this.volatileSet) return;
+  if (!this.owningPlayback()) return;
   this.state.service = this.servicename;
   this.state.seek = this.currentSeekMs();
   // The quality tier is measured from the cache and does not depend on ALSA, so
@@ -1683,6 +1843,389 @@ SoloistConnect.prototype.unsetVolatile = function () {
 };
 
 // ---------------------------------------------------------------------------
+// Queue mode: Volumio's queue owns the playhead
+// ---------------------------------------------------------------------------
+//
+// Two modes, never both at once.
+//
+//   Connect mode - the phone owns the playhead. We are volatile, idle maps to
+//                  play so Soloist can auto-advance, and next/prev are
+//                  skip_next/skip_prev inside Spotify's own context.
+//   queue mode   - Volumio's queue owns the playhead. We are NOT volatile, so
+//                  core walks the mixed list, calls clearAddPlayTrack for each
+//                  soloist_connect row and starts the next service itself when
+//                  we report stop. next/prev never reach us here:
+//                  CoreStateMachine::next only calls the plugin while
+//                  isVolatile.
+//
+// Measured on hanger, 2026-08-24, and the reason this works at all:
+//
+//   - play with a uri needs only a stored session. The Spotify app does not
+//     have to be open, and is_active is true for a play we issue ourselves.
+//   - Soloist does not stop at the end of a single URI, it rolls into autoplay,
+//     and there is no daemon switch for that: go-librespot has
+//     disable_autoplay, Soloist has only --single-track, which exits the
+//     process. But the roll is announced before it is audible. playback_state
+//     buffering with position == duration arrived 380 ms ahead of the next
+//     track's audio on the tightest of three runs. That event is the end of the
+//     row.
+//   - Releasing the DAC takes 1-12 ms (pcm close handed off keep=1) and MPD
+//     opened 172-220 ms later with no busy card and no dead PCM, so the pause
+//     and the yield fit inside that 380 ms.
+
+// Drop volatile without the pause and yield that unsetVolatile performs: core
+// has already stopped whatever was playing and is about to hand us a row.
+// Clearing our own flag first makes core's volatileCallback a no-op, which is
+// the idiom takeOverPlayback already uses.
+SoloistConnect.prototype.leaveVolatileForQueue = function () {
+  const sm = this.context.coreCommand.stateMachine;
+  this.clearInactiveHold();
+  if (this.ignoreStopTimer) {
+    clearTimeout(this.ignoreStopTimer);
+    this.ignoreStopTimer = null;
+  }
+  this.ignoreStopEvent = false;
+  this.volatileSet = false;
+  try {
+    if (sm.isVolatile) sm.unSetVolatile();
+  } catch (e) {
+    /* already cleared by core */
+  }
+  if (typeof sm.setConsumeUpdateService === 'function') {
+    sm.setConsumeUpdateService(undefined);
+  }
+};
+
+SoloistConnect.prototype.leaveQueueMode = function (reason, reclaim) {
+  if (!this.queueMode) return;
+  this.logger.info('SoloistConnect: leaving queue mode: ' + reason);
+  this.clearQueueStartTimer();
+  this.queueMode = false;
+  this.queueUri = '';
+  this.queueIndex = -1;
+  // The phone taking the session mid-row does not produce a fresh play
+  // transition, so setStatus would never claim. Claim here instead. Core
+  // stopping us is the opposite case and must not reclaim.
+  if (reclaim && this.state.status === 'play') this.takeOverPlayback();
+};
+
+// Is the row we armed still the one core is playing?
+//
+// Core does not call our stop() when it advances: CoreStateMachine::stop
+// resolves trackBlock at the new currentPosition and stops that service, not
+// the one that just finished. So a timer armed for one row can outlive it, and
+// firing then would report a stop for whatever is current now.
+SoloistConnect.prototype.queueRowIsCurrent = function (uri, index) {
+  try {
+    const sm = this.context.coreCommand.stateMachine;
+    if (sm.currentPosition !== index) return false;
+    const queue = sm.playQueue && sm.playQueue.arrayQueue;
+    if (!queue) return false;
+    const row = queue[index];
+    return !!(row && row.uri === uri && row.service === this.servicename);
+  } catch (e) {
+    return false;
+  }
+};
+
+// The position core is currently playing, or -1 if it cannot be read.
+SoloistConnect.prototype.currentQueueIndex = function () {
+  try {
+    const sm = this.context.coreCommand.stateMachine;
+    const index = sm.currentPosition;
+    return typeof index === 'number' ? index : -1;
+  } catch (e) {
+    return -1;
+  }
+};
+
+// Queue playback is off by default. A Spotify row still appears in the queue
+// when it is off, and is skipped when it is reached: a row that silently
+// vanishes from the list the user built is dishonest, a row that is visibly
+// skipped is not.
+SoloistConnect.prototype.queuePlaybackEnabled = function () {
+  return this.config.get('queue_playback') === true;
+};
+
+// What to do with a row that did not produce local audio. Off skips it. On
+// leaves it playing wherever the Connect session went.
+SoloistConnect.prototype.remoteQueuePlayback = function () {
+  return this.config.get('queue_remote_playback') === true;
+};
+
+// How long to wait for a queue row to start. A method so a test can shorten it.
+SoloistConnect.prototype.queueStartTimeoutMs = function () {
+  return QUEUE_START_TIMEOUT_MS;
+};
+
+SoloistConnect.prototype.clearQueueStartTimer = function () {
+  if (!this.queueStartTimer) return;
+  clearTimeout(this.queueStartTimer);
+  this.queueStartTimer = null;
+};
+
+// A row we cannot play. Core invoked us from play() while currentStatus is
+// still stop, so a stop publish hits syncState's "No code" branch and the
+// mixed list does not move. next() from stop increments and plays the
+// following row. Must not run inside play()'s own turn.
+SoloistConnect.prototype.skipQueueRow = function (uri, reason) {
+  this.logger.info('SoloistConnect: skipping queue row ' + uri + ': ' + reason);
+  this.clearQueueStartTimer();
+  this.leaveVolatileForQueue();
+  this.queueMode = false;
+  this.queueUri = '';
+  this.queueIndex = -1;
+  this.state = this.emptyState();
+  this.state.uri = uri;
+  const self = this;
+  setImmediate(() => {
+    try {
+      const sm = self.context.coreCommand.stateMachine;
+      if (sm && typeof sm.next === 'function') sm.next();
+    } catch (e) {
+      self.logger.error('SoloistConnect: skip could not advance: ' + e);
+    }
+  });
+};
+
+// End of our row. Pause before the roll is audible, release the DAC, then
+// report stop, which is what CoreStateMachine::syncState turns into
+// currentPosition++ and a play of the next service.
+SoloistConnect.prototype.endQueueRow = function (reason) {
+  if (!this.queueMode) return;
+  this.clearQueueStartTimer();
+  this.logger.info(
+    'SoloistConnect: queue row ended (' + reason + ') uri=' + this.queueUri
+  );
+  this.clearPendingSeek();
+  this.clearQualityRetry();
+  this.stopSeekTimer();
+  this.sendCommand({ command: 'pause' });
+  this.pendingYieldAt = Date.now();
+  this.requestAlsaYield();
+  this.state.status = 'stop';
+  this.state.seek = (this.state.duration || 0) * 1000;
+  const snapshot = this.stateSnapshot();
+  // Leave before the stop publish: syncState will play the next service in
+  // the same turn, and that service is not us.
+  this.leaveQueueMode('row ended', false);
+  const publish = () => this.publishState(snapshot);
+  // stop() and unsetVolatile wait for the PCM. Publishing stop immediately
+  // lets core open MPD on a card we still hold. If we already released,
+  // publish now so the 380 ms buffering lead is not spent waiting.
+  if (!this.alsaHeldByUs()) {
+    publish();
+    return;
+  }
+  this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)
+    .then(publish);
+};
+
+// Queue-mode watchdog, run on every playback_state.
+//
+// Returns true when the event has been consumed and must not be published as
+// ordinary playback.
+SoloistConnect.prototype.checkQueueRow = function (msg, incomingUri) {
+  if (!this.queueMode) return false;
+
+  // Context alone is not a session move: play of a track URI may name the
+  // album as context while the item is still our row. Only the item URI
+  // says the playhead left. Then is_active says which way.
+  //
+  //   is_active true  - something started playing here, so the row is over and
+  //                     Connect mode takes back over.
+  //   is_active false - the session went to a different device. Reclaiming
+  //                     there runs takeOverPlayback, which calls volumioStop
+  //                     and grabs the device while core is already starting the
+  //                     next row; MPD then opened a card we had not released
+  //                     and failed with "Device or resource busy". End the row
+  //                     instead, so the yield happens before core moves on.
+  const context = (msg && msg.context && msg.context.uri) || '';
+  if (
+    context &&
+    this.queueUri &&
+    context !== this.queueUri &&
+    incomingUri &&
+    incomingUri !== this.queueUri
+  ) {
+    if (msg.is_active === false) {
+      this.endQueueRow('session moved to ' + context);
+      return true;
+    }
+    this.leaveQueueMode('context is ' + context, true);
+    return false;
+  }
+
+  if (!incomingUri) return false;
+
+  if (incomingUri !== this.queueUri) {
+    this.endQueueRow('rolled to ' + incomingUri);
+    return true;
+  }
+
+  // Our row is producing audio here, so it started.
+  if (msg.status === 'playing') this.clearQueueStartTimer();
+
+  // Idle after the row has started is the gap after our URI. Idle before
+  // first audio is leftover and must not skip the row.
+  if (msg.status === 'idle' && !this.queueStartTimer) {
+    this.endQueueRow('idle');
+    return true;
+  }
+
+  const durationMs = this.itemMeta(msg.item).durationMs;
+  const positionMs = Number(
+    msg.position && msg.position.position_ms != null
+      ? msg.position.position_ms
+      : NaN
+  );
+  if (
+    msg.status === 'buffering' &&
+    durationMs > 0 &&
+    Number.isFinite(positionMs) &&
+    durationMs - positionMs <= QUEUE_END_WINDOW_MS
+  ) {
+    this.endQueueRow('end at ' + positionMs + ' of ' + durationMs);
+    return true;
+  }
+  return false;
+};
+
+// Metadata for a queue row.
+//
+// There is no Spotify Web API here, so a playlist row can only show what
+// Soloist has already told us about that URI. Anything unseen plays correctly
+// and names itself the moment track_changed arrives.
+SoloistConnect.prototype.cacheItem = function (item) {
+  const uri = (item && item.uri) || '';
+  if (uri.indexOf('spotify:track:') !== 0) return;
+  const meta = this.itemMeta(item);
+  if (!meta.title) return;
+  if (this.trackCache.has(uri)) this.trackCache.delete(uri);
+  this.trackCache.set(uri, meta);
+  while (this.trackCache.size > TRACK_CACHE_MAX) {
+    const oldest = this.trackCache.keys().next().value;
+    this.trackCache.delete(oldest);
+  }
+};
+
+SoloistConnect.prototype.explodeUri = function (uri) {
+  const raw = typeof uri === 'string' ? uri : (uri && uri.uri) || '';
+  if (raw.indexOf('spotify:track:') !== 0) {
+    this.logger.error(
+      'SoloistConnect: only spotify:track: URIs can be queued, got ' + raw
+    );
+    return libQ.resolve([]);
+  }
+  const meta = this.trackCache.get(raw);
+  return libQ.resolve([
+    {
+      uri: raw,
+      service: this.servicename,
+      type: 'song',
+      trackType: 'spotify',
+      name: (meta && meta.title) || 'Spotify track',
+      title: (meta && meta.title) || 'Spotify track',
+      artist: (meta && meta.artist) || '',
+      album: (meta && meta.album) || '',
+      albumart: (meta && meta.albumart) || '/albumart',
+      duration: meta ? Math.round(meta.durationMs / 1000) : 0,
+    },
+  ]);
+};
+
+SoloistConnect.prototype.clearAddPlayTrack = function (track) {
+  const uri = (track && track.uri) || '';
+  const index = this.currentQueueIndex();
+  if (uri.indexOf('spotify:track:') !== 0) {
+    this.skipQueueRow(uri, 'not a Spotify track URI');
+    return libQ.resolve();
+  }
+  if (!this.queuePlaybackEnabled()) {
+    this.skipQueueRow(uri, 'queue playback is off in the plugin settings');
+    return libQ.resolve();
+  }
+  if (!this.loggedIn) {
+    this.skipQueueRow(uri, 'no stored Spotify session');
+    return libQ.resolve();
+  }
+  // Decide before sending, not after.
+  //
+  // `play` is routed to whichever device holds the Connect session, so issuing
+  // one while the session is elsewhere starts audio on someone else's speaker.
+  // Skipping the row afterwards does not undo that: the pause in endQueueRow is
+  // a request against a session we do not own, and the observed result was the
+  // track playing on the other device anyway. The deadline below stays as the
+  // backstop for losing the session between here and the first audio.
+  if (!this.deviceActive && !this.remoteQueuePlayback()) {
+    this.skipQueueRow(uri, 'another device holds the Spotify session');
+    return libQ.resolve();
+  }
+
+  this.leaveVolatileForQueue();
+  this.queueMode = true;
+  this.queueUri = uri;
+  this.queueIndex = index;
+
+  this.clearPendingSeek();
+  this.clearQualityRetry();
+  this.resetQuality();
+  this.state = this.emptyState();
+  this.publishedState = null;
+  this.positionAnchor = { position_ms: 0, timestamp_ms: Date.now(), speed: 0 };
+  const meta = this.trackCache.get(uri);
+  this.state.uri = uri;
+  if (meta) {
+    this.state.title = meta.title;
+    this.state.artist = meta.artist;
+    this.state.album = meta.album;
+    this.state.albumart = meta.albumart;
+    this.state.duration = Math.round(meta.durationMs / 1000);
+  }
+
+  // The previous row's service has already been stopped by core. Make sure the
+  // shim is not still being told to let go before we ask for audio.
+  this.pendingYieldAt = 0;
+  this.clearAlsaYield();
+  this.logger.info(
+    'SoloistConnect: queue row play ' + uri + ' at position ' + index
+  );
+  this.sendCommand({ command: 'play', uri: uri });
+
+  // Nothing in the protocol reports "that play went to a different device".
+  // A play issued while another device holds the session is accepted and then
+  // simply never produces local playback, and no event says so. Give the row a
+  // deadline, bound to the row it was armed for, which also covers an expired
+  // session, a track that will not play, and a dead network.
+  this.clearQueueStartTimer();
+  const deadline = this.queueStartTimeoutMs();
+  this.queueStartTimer = setTimeout(() => {
+    this.queueStartTimer = null;
+    if (!this.queueRowIsCurrent(uri, index)) {
+      this.logVerbose(
+        'start deadline for ' + uri + ' dropped: core has moved on'
+      );
+      return;
+    }
+    if (this.remoteQueuePlayback()) {
+      this.logger.info(
+        'SoloistConnect: queue row ' + uri + ' produced no local audio within ' +
+        deadline + 'ms; remote playback is on, leaving it with the active ' +
+        'Connect device'
+      );
+      this.leaveQueueMode('remote playback, no local audio', false);
+      return;
+    }
+    this.logger.info(
+      'SoloistConnect: queue row ' + uri + ' did not start within ' +
+      deadline + 'ms, skipping'
+    );
+    this.endQueueRow('no playback within ' + deadline + 'ms');
+  }, deadline);
+  return libQ.resolve();
+};
+
+// ---------------------------------------------------------------------------
 // Volumio playback controls -> Soloist commands
 // ---------------------------------------------------------------------------
 
@@ -1699,9 +2242,11 @@ SoloistConnect.prototype.stop = function () {
     this.logger.info('SoloistConnect: ignoring stop echo from volatile setup');
     return libQ.resolve();
   }
+  this.leaveQueueMode('core stopped this service', false);
   this.clearPendingSeek();
   this.clearInactiveHold();
   this.clearQualityRetry();
+  this.clearQueueStartTimer();
   this.logger.info('SoloistConnect: yielding playback');
   this.setMpdIgnoreUpdate(false);
   this.pendingYieldAt = Date.now();
@@ -1760,7 +2305,7 @@ SoloistConnect.prototype.seek = function (positionMs) {
     this.seekCommandTimer = null;
     const pos = this.pendingSeekMs;
     this.pendingSeekMs = null;
-    if (pos == null || !this.volatileSet) return;
+    if (pos == null || !this.owningPlayback()) return;
     this.logVerbose('seek ' + pos + 'ms');
     this.sendCommand({ command: 'seek', position_ms: pos });
   };
@@ -1838,7 +2383,7 @@ SoloistConnect.prototype.commitMixerVolume = function (rounded) {
 
 SoloistConnect.prototype.flushPendingMixerVolume = function () {
   if (this.pendingMixerVolume == null) return;
-  if (!this.mixerIsExternal() || !this.active || !this.volatileSet) return;
+  if (!this.mixerIsExternal() || !this.active || !this.owningPlayback()) return;
   const rounded = this.pendingMixerVolume;
   this.pendingMixerVolume = null;
   this.commitMixerVolume(rounded);
@@ -1862,7 +2407,7 @@ SoloistConnect.prototype.applySoloistVolume = function (vol) {
   // playback_state on first claim runs takeOverPlayback (async volumioStop)
   // then used to call volumiosetvolume in the same tick. That amixer on a
   // foreign softvolume is the update-check / leftover-local path.
-  if (!this.active || !this.volatileSet) {
+  if (!this.active || !this.owningPlayback()) {
     this.pendingMixerVolume = rounded;
     return;
   }
@@ -1913,10 +2458,18 @@ SoloistConnect.prototype.getUIConfig = function () {
       path.join(__dirname, 'UIConfig.json')
     )
     .then((uiconf) => {
-      // Look up by id rather than by position. Inserting a field mid-list
-      // silently shifted every index below it.
+      // Look up by id across every section. A field that moves to another
+      // section must not depend on sections[0] or on list position.
+      const findEl = (id) => {
+        const sections = uiconf.sections || [];
+        for (let i = 0; i < sections.length; i++) {
+          const el = (sections[i].content || []).find((c) => c.id === id);
+          if (el) return el;
+        }
+        return null;
+      };
       const set = (id, value) => {
-        const el = uiconf.sections[0].content.find((c) => c.id === id);
+        const el = findEl(id);
         if (el) el.value = value;
       };
 
@@ -1927,7 +2480,7 @@ SoloistConnect.prototype.getUIConfig = function () {
       // file, and fall back to a known-good option when the stored value is
       // missing or no longer offered.
       const setSelect = (id, value, fallback) => {
-        const el = uiconf.sections[0].content.find((c) => c.id === id);
+        const el = findEl(id);
         if (!el) return;
         const opts = el.options || [];
         const match =
@@ -1947,6 +2500,8 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('quality_retry_ms', self.qualityRetryMs());
       set('quality_retry_max', self.qualityRetryMax());
       set('output_trim_db', self.config.get('output_trim_db'));
+      set('queue_playback', self.config.get('queue_playback') === true);
+      set('queue_remote_playback', self.config.get('queue_remote_playback') === true);
       set('verbose_logging', self.config.get('verbose_logging') === true);
       self.warnIfSpopStarted();
       defer.resolve(uiconf);
@@ -1960,14 +2515,37 @@ SoloistConnect.prototype.getUIConfig = function () {
 // throws on a non-numeric value, so a cleared number field must be rejected here
 // with a message rather than reaching the config store. Returning early leaves
 // the stored settings untouched and the daemon running on the last good values.
+// A section save only posts that section's fields. Absent means keep stored.
+SoloistConnect.prototype.postedOrStoredBool = function (data, key, stored) {
+  if (data[key] === undefined) return !!stored;
+  return !!data[key];
+};
+
+SoloistConnect.prototype.postedOrStoredInt = function (data, key, fallback, check) {
+  if (data[key] === undefined || data[key] === null || data[key] === '') {
+    const stored = parseInt(this.config.get(key), 10);
+    return {
+      ok: true,
+      value: Number.isFinite(stored) ? stored : fallback,
+    };
+  }
+  const n = parseInt(data[key], 10);
+  if (!Number.isFinite(n) || !check(n)) return { ok: false };
+  return { ok: true, value: n };
+};
+
 SoloistConnect.prototype.validateSettings = function (data) {
-  const initialVolume = parseInt(data.initial_volume, 10);
-  if (isNaN(initialVolume) || initialVolume < 0 || initialVolume > 100) {
+  const initialVolume = this.postedOrStoredInt(
+    data, 'initial_volume', 50, (n) => n >= 0 && n <= 100
+  );
+  if (!initialVolume.ok) {
     return { ok: false, message: 'Initial volume must be a number between 0 and 100.' };
   }
 
-  const cacheSize = parseInt(data.cache_size_mb, 10);
-  if (isNaN(cacheSize) || (cacheSize !== 0 && cacheSize < 100)) {
+  const cacheSize = this.postedOrStoredInt(
+    data, 'cache_size_mb', 1024, (n) => n === 0 || n >= 100
+  );
+  if (!cacheSize.ok) {
     return { ok: false, message: 'Cache size must be 0 (no limit) or at least 100 MB.' };
   }
 
@@ -1975,13 +2553,17 @@ SoloistConnect.prototype.validateSettings = function (data) {
   // period is chosen independently in the shim. Below 100ms the software
   // buffer is too small for a loaded device; 2000ms is the uncapped
   // upstream default.
-  const bufferMs = parseInt(data.buffer_ms, 10);
-  if (isNaN(bufferMs) || bufferMs < 100 || bufferMs > 2000) {
+  const bufferMs = this.postedOrStoredInt(
+    data, 'buffer_ms', 500, (n) => n >= 100 && n <= 2000
+  );
+  if (!bufferMs.ok) {
     return { ok: false, message: 'Output buffer must be between 100 and 2000 ms.' };
   }
 
-  const outputTrimDb = parseInt(data.output_trim_db, 10);
-  if (isNaN(outputTrimDb) || outputTrimDb < -12 || outputTrimDb > 12) {
+  const outputTrimDb = this.postedOrStoredInt(
+    data, 'output_trim_db', 0, (n) => n >= -12 && n <= 12
+  );
+  if (!outputTrimDb.ok) {
     return { ok: false, message: 'Output trim must be an integer between -12 and 12 dB.' };
   }
 
@@ -2044,19 +2626,33 @@ SoloistConnect.prototype.validateSettings = function (data) {
   return {
     ok: true,
     values: {
-      api_key: (data.api_key || '').trim(),
-      device_name: (data.device_name || '').trim() || 'Volumio',
-      initial_volume: initialVolume,
-      cache_size_mb: cacheSize,
+      api_key: data.api_key === undefined
+        ? (this.config.get('api_key') || '')
+        : (data.api_key || '').trim(),
+      device_name: data.device_name === undefined
+        ? (this.config.get('device_name') || 'Volumio')
+        : ((data.device_name || '').trim() || 'Volumio'),
+      initial_volume: initialVolume.value,
+      cache_size_mb: cacheSize.value,
       cache_location: cacheLocation,
-      buffer_ms: bufferMs,
+      buffer_ms: bufferMs.value,
       seek_coalesce_ms: seekCoalesce.value,
       inactive_hold_ms: inactiveHold.value,
       quality_retry_ms: qualityRetry.value,
       quality_retry_max: qualityRetryMax.value,
-      output_trim_db: outputTrimDb,
-      retain_api_key: !!data.retain_api_key,
-      verbose_logging: !!data.verbose_logging,
+      output_trim_db: outputTrimDb.value,
+      retain_api_key: this.postedOrStoredBool(
+        data, 'retain_api_key', this.config.get('retain_api_key')
+      ),
+      queue_playback: this.postedOrStoredBool(
+        data, 'queue_playback', this.config.get('queue_playback')
+      ),
+      queue_remote_playback: this.postedOrStoredBool(
+        data, 'queue_remote_playback', this.config.get('queue_remote_playback')
+      ),
+      verbose_logging: this.postedOrStoredBool(
+        data, 'verbose_logging', this.config.get('verbose_logging')
+      ),
     },
   };
 };
@@ -2076,6 +2672,26 @@ SoloistConnect.prototype.parseOptionalMs = function (raw, key, fallback, max) {
   return { ok: true, value: n };
 };
 
+// Which saved values the daemon actually reads. Everything else is decided in
+// this process at runtime, so changing only those must not restart playback.
+const DAEMON_SETTINGS = [
+  'api_key',
+  'device_name',
+  'initial_volume',
+  'cache_size_mb',
+  'cache_location',
+  'buffer_ms',
+  'output_trim_db',
+  'verbose_logging',
+];
+
+SoloistConnect.prototype.daemonSettingsChanged = function (values) {
+  for (const key of DAEMON_SETTINGS) {
+    if (this.config.get(key) !== values[key]) return true;
+  }
+  return false;
+};
+
 SoloistConnect.prototype.saveSoloistSettings = function (data) {
   const self = this;
 
@@ -2085,6 +2701,9 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
     this.commandRouter.pushToastMessage('error', 'Spotify Soloist', result.message);
     return libQ.resolve();
   }
+
+  // Read before writing: the comparison is against what is stored now.
+  const restartNeeded = this.daemonSettingsChanged(result.values);
 
   this.config.set('api_key', result.values.api_key);
   this.config.set('device_name', result.values.device_name);
@@ -2098,6 +2717,8 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('quality_retry_max', result.values.quality_retry_max);
   this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
+  this.config.set('queue_playback', result.values.queue_playback);
+  this.config.set('queue_remote_playback', result.values.queue_remote_playback);
   this.config.set('verbose_logging', result.values.verbose_logging);
   this.clearPendingSeek();
 
@@ -2105,7 +2726,9 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   // MemTotal in RAM mode, and RAM mode is refused outright on a board too small
   // to carry the daemon's own 100 MB floor. Either would otherwise be a setting
   // that appears to have been accepted and did something different.
-  if (result.values.cache_location === 'ram') {
+  const cachePosted =
+    data.cache_location !== undefined || data.cache_size_mb !== undefined;
+  if (cachePosted && result.values.cache_location === 'ram') {
     const ramMb = this.ramCacheSizeMb();
     if (!ramMb) {
       this.commandRouter.pushToastMessage(
@@ -2120,6 +2743,14 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
         'RAM cache limited to ' + ramMb + ' MB on this board.'
       );
     }
+  }
+
+  // Restarting the daemon stops whatever is playing. Do it only when the
+  // daemon is actually reading something that changed; the queue switches are
+  // read by this process on the next track.
+  if (!restartNeeded) {
+    this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved.');
+    return libQ.resolve();
   }
 
   this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');

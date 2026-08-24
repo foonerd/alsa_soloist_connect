@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.6.19.**
+> **Alpha, version 0.7.0.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -52,7 +52,8 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
-| `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping. |
+| `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping, queue mode. |
+| `soloist_connect/test/` | Queue-mode harness. No daemon, no ALSA. `npm test` from `soloist_connect/`. |
 | `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`, built by the Docker matrix. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
 | `docker/Dockerfile.shim.{amd64,arm64,armhf}` | Bookworm build images. `libasound2-dev` and a toolchain, nothing else. |
@@ -241,10 +242,39 @@ Behaviour worth knowing when reading `index.js`:
 - Volumio's state machine calls `stop()` on volatile services shortly after volatile mode begins. That echo is swallowed for two seconds; every later stop is a real request and is honoured.
 - **The seek timer ticks, but does not publish.** It advances `seek` once a second on the object handed to `servicePushState`, which `CoreStateMachine.syncState` keeps by reference as `volatileState` and `getState()` reads `seek` from. That is how the bar moves: the UI does not interpolate, and skip, seek and a browser refresh all take their origin from that value. Stock `spop` achieves the same by ticking `this.state` because it pushes that object directly; this plugin publishes a snapshot, to stop core aliasing our mutable state during a nested publication, so the tick writes to the snapshot instead. A publish per second must never come back: it runs the state machine, `volumiodiscovery`, every interface plugin and MRS's multiroom sync, and MRS plus `volumioswitch` then fails `snd_pcm_avail(softvolume)` and XRUNs the DAC.
 - **The position anchor rejects an implausible timestamp.** `currentSeekMs()` is `position_ms + (now - timestamp_ms)`, so a skewed clock, or a `timestamp_ms` sent in seconds rather than milliseconds, moves the bar by the size of the error. Anything more than two seconds from now is discarded and the position is anchored to the present.
-- `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start. `idle` is mapped the same way while playing: it is the gap between Spotify tracks, not a source stop, and publishing it as `stop` hit Volumio's end-of-block path, which starts the next queue item, while our own `stop()` paused Soloist. Nothing advanced.
+- `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start. In Connect mode `idle` is mapped the same way while playing: it is the gap between Spotify tracks, not a source stop, and publishing it as `stop` hit Volumio's end-of-block path, which starts the next queue item, while our own `stop()` paused Soloist. Nothing advanced. In queue mode that path is what we want, so `idle` after the row has started is stop.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
+- **Queue mode is not volatile.** See [Queue mode](#queue-mode).
 - Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
 - The bit depth field carries the Spotify quality tier instead of a bit depth. See [Reporting the quality tier](#reporting-the-quality-tier).
+
+---
+
+## Queue mode
+
+Off by default (`queue_playback`). Connect mode is unchanged: volatile, Spotify owns the playhead, `next`/`prev` are `skip_next`/`skip_prev`.
+
+When on, a Volumio queue row whose `service` is `soloist_connect` and whose URI is `spotify:track:…` is played with `play { uri }`. That needs `logged_in`. The phone does not have to be open. `is_active` is recorded immediately as `deviceActive` so a seek blink on the lagged `active` flag cannot skip a row we can play.
+
+Two modes, never both:
+
+| | Connect | Queue |
+|---|---|---|
+| Playhead | Spotify | Volumio's mixed list |
+| Volatile | yes | no |
+| `next` / `prev` | plugin → Soloist | core, next service |
+| `idle` | stay play | stop after the row has started |
+| End of URI | Soloist autoplay | pause, yield, publish stop |
+
+A row that cannot play (setting off, not logged in, not a track URI, or another device holds the session and remote play is off) calls `stateMachine.next()` on the next turn. Publishing stop while core is still inside `play()` with `currentStatus === 'stop'` hits syncState's empty branch and the list does not move.
+
+The row ends on buffering within 1.5 s of duration, idle after first audio, `track_changed` to another URI, or a roll. `endQueueRow` waits for ALSA if we still hold it. `startPlaybackTimer` is not called when metadata arrives: that would arm a second seek clock. Duration is written onto `currentSongDuration` instead.
+
+`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata only. Soloist's upcoming list is not pushed into Volumio.
+
+Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value.
+
+The harness is `soloist_connect/test/queue-mode.test.js`.
 
 ---
 
@@ -267,7 +297,7 @@ Four helpers read the lock:
 | `alsaHeldByUs()` / `alsaHeldByOther()` | the two comparisons |
 | `waitUntil(pred, ms)` | polls at 20 ms with a ceiling, resolving either way |
 
-**Yield** happens in `unsetVolatile()` and in `stop()`, and nowhere else: request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise.
+**Yield** happens in `unsetVolatile()`, `stop()`, and `endQueueRow()`. Request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise. `endQueueRow` publishes stop only after the card is free, or immediately if we already released it.
 
 **Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight`:
 
@@ -448,6 +478,7 @@ The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u 
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter metering.** When the screensaver's Spotify metering is on, the daemon plays through `plug:spotify`, PeppyMeter's metered entry at contribution priority 5, so its VU meters respond to Spotify. Contributions above that point are skipped: FusionDSP at 10 and Stylish Player at 7. PeppyMeter already forces its Spotify toggle off when DSP is on. See [PeppyMeter integration](#peppymeter-integration).
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
+- **Queue mode does not rewrite `spop` playlists.** A row must already be `soloist_connect`. There is no Spotify browse or search; `explodeUri` only accepts `spotify:track:` and fills names from URIs Soloist has already reported.
 - **arm64 is unverified at runtime.** Built by the matrix, but only armhf and amd64 have been exercised.
 - **The RAM cache is untested at its limit.** Selecting RAM mounts a tmpfs over `/data/soloist/cache`, sized at a quarter of `MemTotal` and capped by the Cache size setting. Whether the daemon evicts or aborts when that filesystem fills has not been observed, because no session has yet reached the ceiling.
 - **The first underrun is unexplained.** Recovery from one is now correct, but the fill level collapsing to zero in the first place is not accounted for. See [Recovering from an underrun](#recovering-from-an-underrun).

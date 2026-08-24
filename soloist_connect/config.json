@@ -51,6 +51,14 @@
     "type": "boolean",
     "value": false
   },
+  "queue_playback": {
+    "type": "boolean",
+    "value": false
+  },
+  "queue_remote_playback": {
+    "type": "boolean",
+    "value": false
+  },
   "peppy_metering": {
     "type": "boolean",
     "value": false
