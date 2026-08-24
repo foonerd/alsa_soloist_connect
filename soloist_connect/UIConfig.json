@@ -224,7 +224,8 @@
           "seek_coalesce_ms",
           "inactive_hold_ms",
           "quality_retry_ms",
-          "quality_retry_max"
+          "quality_retry_max",
+          "queue_fetch_ms"
         ]
       },
       "content": [
@@ -289,6 +290,22 @@
             },
             {
               "max": 10
+            }
+          ]
+        },
+        {
+          "id": "queue_fetch_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.QUEUE_FETCH_MS",
+          "doc": "TRANSLATE.QUEUE_FETCH_MS_DOC",
+          "value": 2500,
+          "attributes": [
+            {
+              "min": 0
+            },
+            {
+              "max": 10000
             }
           ]
         }

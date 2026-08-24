@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.7.0.**
+> **Alpha, version 0.7.1.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -60,6 +60,7 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Inactive hold (ms) | Timing | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. Does not restart. |
 | Quality retry wait (ms) | Timing | 300 | 0 to 2000. How long to wait before looking again when the playing cache file is not ready. 0 does not retry. Does not restart. |
 | Quality retries | Timing | 2 | 0 to 10. How many times to look again. 0 does not retry. Does not restart. |
+| Spotify Queue wait (ms) | Timing | 2500 | 0 to 10000. How long the Spotify Queue tile waits for `get_queue`. 0 shows the last event immediately. Does not restart. |
 | Verbose logging | Diagnostics | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics. Saving restarts so the shim picks it up. |
 
 The page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
@@ -74,7 +75,7 @@ Turn on **Play Spotify tracks from the Volumio queue**. The row must say `servic
 
 Names and artwork come from tracks Soloist has already reported this session. A URI it has never seen queues with a placeholder until it starts.
 
-Soloist's own queue is not used. Next and previous walk the Volumio list. When the Spotify row ends, Soloist is paused and the DAC is released so the next service (local, UPnP, web radio) can open it.
+Soloist's own queue is not the playhead. Next and previous walk the Volumio list. When the Spotify row ends, Soloist is paused and the DAC is released so the next service (local, UPnP, web radio) can open it. A **Spotify Queue** tile on Browse shows that Connect list (now playing, play next, up next, autoplay, recently played). Tapping a track there is the same `explodeUri` path as a mixed-list row.
 
 Do not turn on **Let a queued track play on the active Spotify device** unless you want a row to play on the phone or another speaker when the session is not here. Off is the safe default.
 
@@ -162,6 +163,9 @@ That is what it is: memory, not storage. Saving Spotify, Sound, Cache or Diagnos
 
 **A mixed-playlist Spotify row needs this plugin's service name.**
 `soloist_connect`, not `spop`. Old playlists are not rewritten. With queue playback off, those rows still appear and are skipped when reached.
+
+**The Spotify Queue tile is this speaker's Connect list.**
+It appears on Browse when Soloist is connected. Now playing, play next, up next, autoplay and recently played come from `get_queue`. That is not Volumio's mixed playlist, and there is no Spotify library browse or search.
 
 ---
 

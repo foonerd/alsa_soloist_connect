@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.7.0.**
+> **Alpha, version 0.7.1.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -52,8 +52,9 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
-| `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping, queue mode. |
-| `soloist_connect/test/` | Queue-mode harness. No daemon, no ALSA. `npm test` from `soloist_connect/`. |
+| `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping, queue mode, browse tile. |
+| `soloist_connect/assets/` | Browse-tile sourceicon (`spotify.svg`). |
+| `soloist_connect/test/` | Queue-mode and browse harness. No daemon, no ALSA. `npm test` from `soloist_connect/`. |
 | `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`, built by the Docker matrix. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
 | `docker/Dockerfile.shim.{amd64,arm64,armhf}` | Bookworm build images. `libasound2-dev` and a toolchain, nothing else. |
@@ -270,7 +271,7 @@ A row that cannot play (setting off, not logged in, not a track URI, or another 
 
 The row ends on buffering within 1.5 s of duration, idle after first audio, `track_changed` to another URI, or a roll. `endQueueRow` waits for ALSA if we still hold it. `startPlaybackTimer` is not called when metadata arrives: that would arm a second seek clock. Duration is written onto `currentSongDuration` instead.
 
-`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata only. Soloist's upcoming list is not pushed into Volumio.
+`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile. Soloist's upcoming list is not pushed into Volumio's play queue.
 
 Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value.
 
@@ -478,7 +479,7 @@ The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u 
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.
 - **PeppyMeter metering.** When the screensaver's Spotify metering is on, the daemon plays through `plug:spotify`, PeppyMeter's metered entry at contribution priority 5, so its VU meters respond to Spotify. Contributions above that point are skipped: FusionDSP at 10 and Stylish Player at 7. PeppyMeter already forces its Spotify toggle off when DSP is on. See [PeppyMeter integration](#peppymeter-integration).
 - **Switching source pauses Spotify rather than ending the session.** The device stays in the Spotify app's list, which is deliberate: giving up active-device status would make the user re-select the player just to switch back.
-- **Queue mode does not rewrite `spop` playlists.** A row must already be `soloist_connect`. There is no Spotify browse or search; `explodeUri` only accepts `spotify:track:` and fills names from URIs Soloist has already reported.
+- **Queue mode does not rewrite `spop` playlists.** A row must already be `soloist_connect`. There is a **Spotify Queue** tile for Connect next-up (`get_queue` / `queue_changed`). That is Spotify's list, not Volumio's mixed playlist. There is no library browse or search; `explodeUri` only accepts `spotify:track:` and fills names from URIs Soloist has already reported.
 - **arm64 is unverified at runtime.** Built by the matrix, but only armhf and amd64 have been exercised.
 - **The RAM cache is untested at its limit.** Selecting RAM mounts a tmpfs over `/data/soloist/cache`, sized at a quarter of `MemTotal` and capped by the Cache size setting. Whether the daemon evicts or aborts when that filesystem fills has not been observed, because no session has yet reached the ceiling.
 - **The first underrun is unexplained.** Recovery from one is now correct, but the fill level collapsing to zero in the first place is not accounted for. See [Recovering from an underrun](#recovering-from-an-underrun).

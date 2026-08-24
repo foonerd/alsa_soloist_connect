@@ -54,6 +54,8 @@ const SEEK_COALESCE_DEFAULT_MS = 200;
 const SEEK_COALESCE_MAX_MS = 2000;
 const INACTIVE_HOLD_DEFAULT_MS = 2000;
 const INACTIVE_HOLD_MAX_MS = 10000;
+const QUEUE_FETCH_DEFAULT_MS = 2500;
+const QUEUE_FETCH_MAX_MS = 10000;
 // How close to the end of a queue-mode row a buffering event has to be for it
 // to mean "our track just finished" rather than a mid-track rebuffer.
 const QUEUE_END_WINDOW_MS = 1500;
@@ -65,6 +67,16 @@ const TRACK_CACHE_MAX = 500;
 // holds the Connect session produces no local playback and no event, so
 // without this the mixed list waits for a row that will never start.
 const QUEUE_START_TIMEOUT_MS = 8000;
+// Browse tile for Spotify's own queue (previous / now / upcoming). This is
+// not Volumio's mixed list. get_queue is authenticated and answers with
+// queue_changed; a broadcast of that event is capped at 10, limit 0 asks
+// for all. Local WS, so the wait is short.
+const BROWSE_URI = 'soloist_connect';
+const BROWSE_NAME = 'Spotify Queue';
+// Home tiles do not render Font Awesome. They load albumart through
+// Volumio's albumart server, same path rtlsdr_radio uses for radio.svg.
+const BROWSE_ALBUMART =
+  '/albumart?sourceicon=music_service/soloist_connect/assets/spotify.svg';
 // data/cache dirs are fixed in launch-soloist.sh
 
 module.exports = SoloistConnect;
@@ -126,6 +138,10 @@ function SoloistConnect(context) {
   // uri -> Soloist queue item, harvested from events. explodeUri has no
   // Spotify Web API to ask, so a playlist row shows what we have already seen.
   this.trackCache = new Map();
+  // Last queue_changed payload. The browse tile reads this; nothing here is
+  // written into Volumio's play queue.
+  this.spotifyQueue = { previous: [], upcoming: [] };
+  this.queueWaiters = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +271,7 @@ SoloistConnect.prototype.onStop = function () {
   this.clearQualityRetry();
   this.clearQueueStartTimer();
   this.leaveQueueMode('plugin stop', false);
+  this.removeFromBrowseSources();
   this.disconnectWebSocket();
   this.unsetVolatile();
   this.setMpdIgnoreUpdate(false);
@@ -620,6 +637,9 @@ SoloistConnect.prototype.connectWebSocket = function () {
   this.ws.on('open', () => {
     self.logger.info('SoloistConnect: WebSocket connected');
     self.fetchAudioSpec();
+    // Tile only after the daemon answers. A dead source with no WS is what
+    // Volumio's music-service docs tell us not to register.
+    self.addToBrowseSources();
     self.sendCommand({ command: 'get_state' });
   });
 
@@ -651,6 +671,7 @@ SoloistConnect.prototype.connectWebSocket = function () {
 };
 
 SoloistConnect.prototype.disconnectWebSocket = function () {
+  this.resolveQueueWaiters(this.spotifyQueue);
   if (this.wsReconnectTimer) {
     clearTimeout(this.wsReconnectTimer);
     this.wsReconnectTimer = null;
@@ -973,6 +994,14 @@ SoloistConnect.prototype.qualityRetryMax = function () {
   const n = parseInt(this.config.get('quality_retry_max'), 10);
   if (!Number.isFinite(n) || n < 0 || n > QUALITY_RETRY_MAX_COUNT) {
     return QUALITY_RETRY_DEFAULT_COUNT;
+  }
+  return n;
+};
+
+SoloistConnect.prototype.queueFetchMs = function () {
+  const n = parseInt(this.config.get('queue_fetch_ms'), 10);
+  if (!Number.isFinite(n) || n < 0 || n > QUEUE_FETCH_MAX_MS) {
+    return QUEUE_FETCH_DEFAULT_MS;
   }
   return n;
 };
@@ -1341,12 +1370,14 @@ SoloistConnect.prototype.handleEvent = function (msg) {
 
     case 'queue_changed':
       // Free metadata for URIs we may later be asked to queue. explodeUri has
-      // no Spotify Web API to fall back on.
+      // no Spotify Web API to fall back on. The same payload is the browse
+      // tile; it is not pushed into Volumio's play queue.
       {
         const rows = [].concat(msg.previous || [], msg.upcoming || []);
         for (const row of rows) {
           if (row && row.item) this.cacheItem(row.item);
         }
+        this.rememberQueue(msg);
       }
       break;
 
@@ -2134,6 +2165,251 @@ SoloistConnect.prototype.explodeUri = function (uri) {
   ]);
 };
 
+// ---------------------------------------------------------------------------
+// Spotify queue browse tile
+// ---------------------------------------------------------------------------
+//
+// Spotify's play queue, not Volumio's. get_queue / queue_changed report
+// previous (most recent first) and upcoming. The current track is
+// playback_state.item, which we already keep on this.state. Opening the tile
+// asks get_queue when a session and a socket exist; a missed reply falls
+// back to the last event. Tapping a track is explodeUri, the path a mixed
+// list already uses. Nothing here calls play, pause, or skip.
+
+SoloistConnect.prototype.addToBrowseSources = function () {
+  if (typeof this.commandRouter.volumioAddToBrowseSources !== 'function') return;
+  try {
+    this.commandRouter.volumioAddToBrowseSources({
+      name: BROWSE_NAME,
+      uri: BROWSE_URI,
+      plugin_type: 'music_service',
+      plugin_name: this.servicename,
+      albumart: BROWSE_ALBUMART,
+    });
+  } catch (e) {
+    this.logger.warn('SoloistConnect: could not add browse source: ' + e.message);
+  }
+};
+
+SoloistConnect.prototype.removeFromBrowseSources = function () {
+  if (typeof this.commandRouter.volumioRemoveToBrowseSources !== 'function') return;
+  try {
+    this.commandRouter.volumioRemoveToBrowseSources(BROWSE_NAME);
+  } catch (e) {
+    this.logger.warn('SoloistConnect: could not remove browse source: ' + e.message);
+  }
+};
+
+SoloistConnect.prototype.rememberQueue = function (msg) {
+  this.spotifyQueue = {
+    previous: Array.isArray(msg && msg.previous) ? msg.previous : [],
+    upcoming: Array.isArray(msg && msg.upcoming) ? msg.upcoming : [],
+  };
+  this.resolveQueueWaiters(this.spotifyQueue);
+};
+
+SoloistConnect.prototype.resolveQueueWaiters = function (queue) {
+  const waiters = this.queueWaiters;
+  this.queueWaiters = [];
+  const snapshot = queue || { previous: [], upcoming: [] };
+  for (const waiter of waiters) {
+    try {
+      waiter(snapshot);
+    } catch (e) {
+      this.logger.warn('SoloistConnect: queue waiter failed: ' + e.message);
+    }
+  }
+};
+
+SoloistConnect.prototype.wsIsOpen = function () {
+  return !!(this.ws && this.ws.readyState === WebSocket.OPEN);
+};
+
+SoloistConnect.prototype.fetchSpotifyQueue = function () {
+  const defer = libQ.defer();
+  const snapshot = this.spotifyQueue || { previous: [], upcoming: [] };
+  // Official: get_queue needs a stored session, not is_active. Do not send
+  // it without one; the reply is an error, not an empty list.
+  if (!this.loggedIn || !this.wsIsOpen()) {
+    defer.resolve(snapshot);
+    return defer.promise;
+  }
+
+  const self = this;
+  const waitMs = this.queueFetchMs();
+  const timer = setTimeout(function () {
+    const i = self.queueWaiters.indexOf(onQueue);
+    if (i !== -1) self.queueWaiters.splice(i, 1);
+    defer.resolve(self.spotifyQueue || snapshot);
+  }, waitMs);
+  const onQueue = function (queue) {
+    clearTimeout(timer);
+    defer.resolve(queue);
+  };
+  this.queueWaiters.push(onQueue);
+  this.sendCommand({ command: 'get_queue', limit: 0 });
+  return defer.promise;
+};
+
+SoloistConnect.prototype.browsePage = function (lists) {
+  return {
+    navigation: {
+      prev: { uri: '/' },
+      lists: lists || [],
+    },
+  };
+};
+
+SoloistConnect.prototype.browseInfo = function (title, artist) {
+  return this.browsePage([
+    {
+      title: BROWSE_NAME,
+      icon: 'fa fa-spotify',
+      availableListViews: ['list'],
+      items: [
+        {
+          service: this.servicename,
+          type: 'item-no-menu',
+          title: title,
+          artist: artist || '',
+          icon: 'fa fa-info-circle',
+          uri: BROWSE_URI,
+        },
+      ],
+    },
+  ]);
+};
+
+SoloistConnect.prototype.browseList = function (title, items) {
+  if (!items || !items.length) return null;
+  return {
+    title: title,
+    icon: 'fa fa-spotify',
+    availableListViews: ['list'],
+    items: items,
+  };
+};
+
+SoloistConnect.prototype.browseItemFromEntity = function (item) {
+  const meta = this.itemMeta(item);
+  if (!meta.uri) return null;
+  const isTrack = meta.uri.indexOf('spotify:track:') === 0;
+  return {
+    service: this.servicename,
+    type: isTrack ? 'song' : 'item-no-menu',
+    title: meta.title || (isTrack ? 'Spotify track' : 'Spotify item'),
+    artist: meta.artist || '',
+    album: meta.album || '',
+    albumart: meta.albumart || '/albumart',
+    uri: meta.uri,
+    duration: meta.durationMs ? Math.round(meta.durationMs / 1000) : 0,
+  };
+};
+
+SoloistConnect.prototype.browseNowPlaying = function () {
+  const uri = (this.state && this.state.uri) || '';
+  if (!uri) return null;
+  const isTrack = uri.indexOf('spotify:track:') === 0;
+  return {
+    service: this.servicename,
+    type: isTrack ? 'song' : 'item-no-menu',
+    title: this.state.title || (isTrack ? 'Spotify track' : 'Spotify item'),
+    artist: this.state.artist || '',
+    album: this.state.album || '',
+    albumart: this.state.albumart || '/albumart',
+    uri: uri,
+    duration: this.state.duration || 0,
+  };
+};
+
+SoloistConnect.prototype.browseSongsFromRows = function (rows, skipUri) {
+  const items = [];
+  if (!Array.isArray(rows)) return items;
+  for (const row of rows) {
+    if (!row || !row.item) continue;
+    const uri = this.itemUri(row.item);
+    if (!uri || uri === skipUri) continue;
+    const song = this.browseItemFromEntity(row.item);
+    if (song) items.push(song);
+  }
+  return items;
+};
+
+SoloistConnect.prototype.buildQueueBrowse = function (queue) {
+  if (!this.loggedIn) {
+    return this.browseInfo(
+      'Not signed in',
+      'Pair this speaker from the Spotify app first'
+    );
+  }
+
+  const q = queue || this.spotifyQueue || { previous: [], upcoming: [] };
+  const now = this.browseNowPlaying();
+  const skip = now ? now.uri : '';
+  const playNext = [];
+  const upNext = [];
+  const autoplay = [];
+  const upcoming = Array.isArray(q.upcoming) ? q.upcoming : [];
+  for (const row of upcoming) {
+    if (!row || !row.item) continue;
+    const uri = this.itemUri(row.item);
+    if (!uri || uri === skip) continue;
+    const song = this.browseItemFromEntity(row.item);
+    if (!song) continue;
+    if (row.source === 'autoplay') autoplay.push(song);
+    else if (row.source === 'queue') playNext.push(song);
+    else upNext.push(song);
+  }
+
+  const lists = [];
+  const add = (title, items) => {
+    const list = this.browseList(title, items);
+    if (list) lists.push(list);
+  };
+  add('Now playing', now ? [now] : []);
+  add('Play next', playNext);
+  add('Up next', upNext);
+  add('Autoplay', autoplay);
+  add('Recently played', this.browseSongsFromRows(q.previous, skip));
+
+  if (!lists.length) {
+    return this.browseInfo(
+      'Nothing in the Spotify queue',
+      this.wsIsOpen() ? 'Play something on this speaker' : 'Waiting for Soloist'
+    );
+  }
+  return this.browsePage(lists);
+};
+
+SoloistConnect.prototype.isBrowseUri = function (uri) {
+  return uri === BROWSE_URI || uri.indexOf(BROWSE_URI + '/') === 0;
+};
+
+SoloistConnect.prototype.handleBrowseUri = function (curUri) {
+  const defer = libQ.defer();
+  const self = this;
+  const uri = typeof curUri === 'string' ? curUri : '';
+  if (!this.isBrowseUri(uri)) {
+    defer.resolve(this.browsePage([]));
+    return defer.promise;
+  }
+
+  this.fetchSpotifyQueue()
+    .then(function (queue) {
+      defer.resolve(self.buildQueueBrowse(queue));
+    })
+    .fail(function (e) {
+      self.logger.error('SoloistConnect: browse failed: ' + e);
+      defer.resolve(self.buildQueueBrowse(self.spotifyQueue));
+    });
+  return defer.promise;
+};
+
+// Music-service plugins are asked on every search. There is no catalog.
+SoloistConnect.prototype.search = function () {
+  return libQ.resolve();
+};
+
 SoloistConnect.prototype.clearAddPlayTrack = function (track) {
   const uri = (track && track.uri) || '';
   const index = this.currentQueueIndex();
@@ -2499,6 +2775,7 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('inactive_hold_ms', self.inactiveHoldMs());
       set('quality_retry_ms', self.qualityRetryMs());
       set('quality_retry_max', self.qualityRetryMax());
+      set('queue_fetch_ms', self.queueFetchMs());
       set('output_trim_db', self.config.get('output_trim_db'));
       set('queue_playback', self.config.get('queue_playback') === true);
       set('queue_remote_playback', self.config.get('queue_remote_playback') === true);
@@ -2623,6 +2900,16 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Quality retries must be between 0 and ' + QUALITY_RETRY_MAX_COUNT + '.' };
   }
 
+  const queueFetch = this.parseOptionalMs(
+    data.queue_fetch_ms,
+    'queue_fetch_ms',
+    QUEUE_FETCH_DEFAULT_MS,
+    QUEUE_FETCH_MAX_MS
+  );
+  if (!queueFetch.ok) {
+    return { ok: false, message: 'Queue fetch wait must be between 0 and ' + QUEUE_FETCH_MAX_MS + ' ms.' };
+  }
+
   return {
     ok: true,
     values: {
@@ -2640,6 +2927,7 @@ SoloistConnect.prototype.validateSettings = function (data) {
       inactive_hold_ms: inactiveHold.value,
       quality_retry_ms: qualityRetry.value,
       quality_retry_max: qualityRetryMax.value,
+      queue_fetch_ms: queueFetch.value,
       output_trim_db: outputTrimDb.value,
       retain_api_key: this.postedOrStoredBool(
         data, 'retain_api_key', this.config.get('retain_api_key')
@@ -2715,6 +3003,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('inactive_hold_ms', result.values.inactive_hold_ms);
   this.config.set('quality_retry_ms', result.values.quality_retry_ms);
   this.config.set('quality_retry_max', result.values.quality_retry_max);
+  this.config.set('queue_fetch_ms', result.values.queue_fetch_ms);
   this.config.set('output_trim_db', result.values.output_trim_db);
   this.config.set('retain_api_key', result.values.retain_api_key);
   this.config.set('queue_playback', result.values.queue_playback);

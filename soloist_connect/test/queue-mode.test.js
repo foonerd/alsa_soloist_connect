@@ -18,6 +18,8 @@ const pushed = [];
 const logs = [];
 const queuePushes = [];
 const nextCalls = [];
+const browseAdds = [];
+const browseRemoves = [];
 let queueSaves = 0;
 let startPlaybackTimerCalls = 0;
 
@@ -43,6 +45,8 @@ function makeCtx() {
     pluginManager: { getPlugin: () => null },
     servicePushState(state) { pushed.push(JSON.parse(JSON.stringify(state))); },
     volumioPushQueue(q) { queuePushes.push(JSON.parse(JSON.stringify(q))); },
+    volumioAddToBrowseSources(data) { browseAdds.push(data); },
+    volumioRemoveToBrowseSources(name) { browseRemoves.push(name); },
   };
   return {
     coreCommand,
@@ -258,9 +262,16 @@ async function main() {
   // 10. queue_changed harvests metadata for later rows
   {
     const p = newPlugin();
+    pushed.length = 0;
+    logs.length = 0;
     p.handleEvent({ type: 'queue_changed', previous: [{ item: item }], upcoming: [{ item: rolledItem }] });
     check('cached from queue_changed previous', p.trackCache.has(OURS));
     check('cached from queue_changed upcoming', p.trackCache.has(ROLLED));
+    check('queue_changed keeps previous', p.spotifyQueue.previous.length === 1);
+    check('queue_changed keeps upcoming', p.spotifyQueue.upcoming.length === 1);
+    check('queue_changed does not enter queue mode', p.queueMode === false);
+    check('queue_changed does not publish state', pushed.length === 0);
+    check('queue_changed does not send a command', logs.length === 0, logs.join(' | '));
   }
 
   // 11. the seek path works in both modes
@@ -518,6 +529,8 @@ async function main() {
     const same = Object.assign({}, stored);
     check('queue switches alone do not restart',
       p.daemonSettingsChanged(Object.assign(same, { queue_playback: true })) === false);
+    check('queue fetch wait alone does not restart',
+      p.daemonSettingsChanged(Object.assign(same, { queue_fetch_ms: 1000 })) === false);
     check('a daemon setting does restart',
       p.daemonSettingsChanged(Object.assign({}, stored, { buffer_ms: 400 })) === true);
   }
@@ -532,6 +545,7 @@ async function main() {
       retain_api_key: true, queue_playback: false, queue_remote_playback: false,
       seek_coalesce_ms: 200, inactive_hold_ms: 2000,
       quality_retry_ms: 300, quality_retry_max: 2,
+      queue_fetch_ms: 2500,
     };
     p.config = { get: (key) => stored[key] };
     const result = p.validateSettings({
@@ -544,6 +558,7 @@ async function main() {
     check('partial save keeps trim', result.values.output_trim_db === 4);
     check('partial save keeps verbose', result.values.verbose_logging === true);
     check('partial save sets queue on', result.values.queue_playback === true);
+    check('partial save keeps queue fetch wait', result.values.queue_fetch_ms === 2500);
     check('partial queue save does not restart',
       p.daemonSettingsChanged(result.values) === false);
   }
@@ -680,6 +695,216 @@ async function main() {
     check('stop publishes after the card is free',
       pushed.length === 1 && pushed[0].status === 'stop',
       JSON.stringify(pushed[0] || null));
+  }
+
+  // 28. the browse tile is Spotify's queue, not Volumio's
+  {
+    const p = newPlugin();
+    p.state.uri = OURS;
+    p.state.title = 'Heat Waves';
+    p.state.artist = 'Glass Animals, iann dior';
+    p.state.album = 'Dreamland';
+    p.state.albumart = 'large.jpg';
+    p.state.duration = 175;
+    const page = p.buildQueueBrowse({
+      previous: [{ item: item, source: 'context' }],
+      upcoming: [
+        { item: rolledItem, source: 'queue' },
+        {
+          item: {
+            uri: 'spotify:track:autoplay1',
+            decorations: {
+              identity: { name: 'Radio Cut' },
+              visual_identity: { cover: [] },
+              parent: { entity: { decorations: { identity: { name: 'Radio' } } } },
+              creators: [{ entity: { decorations: { identity: { name: 'Someone' } } } }],
+              playback: { duration_ms: 120000 },
+            },
+          },
+          source: 'autoplay',
+        },
+      ],
+    });
+    const titles = page.navigation.lists.map((l) => l.title);
+    check('browse has now playing', titles[0] === 'Now playing', titles.join(','));
+    check('browse has play next', titles.indexOf('Play next') !== -1, titles.join(','));
+    check('browse has autoplay', titles.indexOf('Autoplay') !== -1, titles.join(','));
+    check('browse drops current from previous', titles.indexOf('Recently played') === -1, titles.join(','));
+    check('browse now playing is our uri',
+      page.navigation.lists[0].items[0].uri === OURS);
+    check('browse play next is the queued uri',
+      page.navigation.lists[1].items[0].uri === ROLLED);
+    check('browse songs keep service',
+      page.navigation.lists[1].items[0].service === 'soloist_connect');
+    check('browse songs are songs',
+      page.navigation.lists[1].items[0].type === 'song');
+  }
+
+  // 29. logged out browse does not leak the last queue
+  {
+    const p = newPlugin();
+    p.loggedIn = false;
+    p.spotifyQueue = { previous: [{ item: item }], upcoming: [{ item: rolledItem }] };
+    const page = p.buildQueueBrowse(p.spotifyQueue);
+    check('logged out is one info list', page.navigation.lists.length === 1);
+    check('logged out is not a song',
+      page.navigation.lists[0].items[0].type === 'item-no-menu');
+    check('logged out names the reason',
+      page.navigation.lists[0].items[0].title === 'Not signed in');
+  }
+
+  // 30. empty queue, signed in
+  {
+    const p = newPlugin();
+    p.state.uri = '';
+    const page = p.buildQueueBrowse({ previous: [], upcoming: [] });
+    check('empty queue is info',
+      page.navigation.lists[0].items[0].title === 'Nothing in the Spotify queue');
+  }
+
+  // 31. handleBrowseUri asks get_queue only when a session and socket exist
+  {
+    const p = newPlugin();
+    p.loggedIn = false;
+    logs.length = 0;
+    await p.handleBrowseUri('soloist_connect');
+    check('logged out browse does not get_queue',
+      !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
+
+    p.loggedIn = true;
+    p.ws = null;
+    logs.length = 0;
+    await p.handleBrowseUri('soloist_connect');
+    check('closed socket browse does not get_queue',
+      !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
+
+    logs.length = 0;
+    const foreign = await p.handleBrowseUri('mpd');
+    check('foreign browse uri is empty',
+      foreign.navigation.lists.length === 0);
+    check('foreign browse does not get_queue',
+      !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
+
+    p.ws = { readyState: 1 };
+    p.state.uri = OURS;
+    p.state.title = 'Heat Waves';
+    logs.length = 0;
+    const pending = p.handleBrowseUri('soloist_connect');
+    check('open socket browse sends get_queue all',
+      logs.some((l) => l === 'cmd {"command":"get_queue","limit":0}'),
+      logs.join(' | '));
+    p.handleEvent({
+      type: 'queue_changed',
+      previous: [],
+      upcoming: [{ item: rolledItem, source: 'context' }],
+    });
+    const page = await pending;
+    const titles = page.navigation.lists.map((l) => l.title);
+    check('get_queue reply fills up next', titles.indexOf('Up next') !== -1, titles.join(','));
+    check('get_queue reply keeps now playing', titles.indexOf('Now playing') !== -1);
+  }
+
+  // 32. a missed get_queue falls back to the last event
+  {
+    const p = newPlugin({ queue_fetch_ms: 20 });
+    p.ws = { readyState: 1 };
+    p.state.uri = '';
+    p.handleEvent({
+      type: 'queue_changed',
+      previous: [],
+      upcoming: [{ item: rolledItem, source: 'context' }],
+    });
+    logs.length = 0;
+    const page = await p.handleBrowseUri('soloist_connect');
+    check('timeout still sent get_queue',
+      logs.some((l) => l === 'cmd {"command":"get_queue","limit":0}'));
+    check('timeout uses last upcoming',
+      page.navigation.lists[0].items[0].uri === ROLLED,
+      JSON.stringify(page.navigation.lists[0] && page.navigation.lists[0].items[0]));
+  }
+
+  // 33. browse does not touch playback
+  {
+    const p = newPlugin();
+    p.cacheItem(item);
+    await p.clearAddPlayTrack({ uri: OURS, service: 'soloist_connect' });
+    p.ws = { readyState: 1 };
+    logs.length = 0;
+    pushed.length = 0;
+    const pending = p.handleBrowseUri('soloist_connect');
+    p.handleEvent({ type: 'queue_changed', previous: [], upcoming: [] });
+    await pending;
+    check('browse leaves queue mode on', p.queueMode === true);
+    check('browse does not pause',
+      !logs.some((l) => l === 'cmd {"command":"pause"}'), logs.join(' | '));
+    check('browse does not play',
+      !logs.some((l) => l.indexOf('"command":"play"') !== -1), logs.join(' | '));
+    check('browse does not yield',
+      !logs.some((l) => l.indexOf('yield') !== -1), logs.join(' | '));
+    check('browse does not publish state', pushed.length === 0);
+  }
+
+  // 34. a browse song still explodes the way a mixed-list row does
+  {
+    const p = newPlugin();
+    p.cacheItem(rolledItem);
+    const song = p.browseItemFromEntity(rolledItem);
+    const out = await p.explodeUri(song.uri);
+    check('browse explode name', out[0].name === 'Something Else', out[0].name);
+    check('browse explode service', out[0].service === 'soloist_connect');
+  }
+
+  // 35. tile registration is a no-op when core has no browse hooks
+  {
+    const p = newPlugin();
+    delete p.commandRouter.volumioAddToBrowseSources;
+    delete p.commandRouter.volumioRemoveToBrowseSources;
+    p.addToBrowseSources();
+    p.removeFromBrowseSources();
+    check('missing browse hooks do not throw', true);
+
+    const q = newPlugin();
+    browseAdds.length = 0;
+    browseRemoves.length = 0;
+    q.addToBrowseSources();
+    q.removeFromBrowseSources();
+    check('add browse uses our uri',
+      browseAdds.length === 1 && browseAdds[0].uri === 'soloist_connect',
+      JSON.stringify(browseAdds[0] || null));
+    check('add browse is not the stock spotify uri',
+      browseAdds[0].uri !== 'spotify');
+    check('add browse uses sourceicon',
+      browseAdds[0].albumart ===
+        '/albumart?sourceicon=music_service/soloist_connect/assets/spotify.svg',
+      String(browseAdds[0].albumart));
+    check('add browse does not rely on font-awesome',
+      browseAdds[0].icon === undefined);
+    check('remove browse uses the tile name',
+      browseRemoves.length === 1 && browseRemoves[0] === 'Spotify Queue');
+  }
+
+  // 36. search is present and empty
+  {
+    const p = newPlugin();
+    const out = await p.search({ value: 'heat' });
+    check('search returns nothing', out === undefined);
+  }
+
+  // 37. queue fetch wait is a timing setting, default 2500
+  {
+    const unset = newPlugin();
+    check('queue fetch default', unset.queueFetchMs() === 2500);
+    check('queue fetch 0 is allowed', newPlugin({ queue_fetch_ms: 0 }).queueFetchMs() === 0);
+    check('queue fetch 10000 is allowed',
+      newPlugin({ queue_fetch_ms: 10000 }).queueFetchMs() === 10000);
+    check('queue fetch out of range falls back',
+      newPlugin({ queue_fetch_ms: 10001 }).queueFetchMs() === 2500);
+    const p = newPlugin({ queue_fetch_ms: 2500 });
+    const bad = p.validateSettings({ queue_fetch_ms: 10001 });
+    check('queue fetch out of range is rejected',
+      bad.ok === false && /Queue fetch wait/.test(bad.message), bad.message);
+    const zero = p.validateSettings({ queue_fetch_ms: 0 });
+    check('queue fetch 0 saves', zero.ok === true && zero.values.queue_fetch_ms === 0);
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
