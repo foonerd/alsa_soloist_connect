@@ -785,6 +785,15 @@ async function main() {
     check('foreign browse does not get_queue',
       !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
 
+    const off = newPlugin({ queue_playback: false });
+    off.ws = { readyState: 1 };
+    logs.length = 0;
+    const hidden = await off.handleBrowseUri('soloist_connect');
+    check('queue playback off browse is empty',
+      hidden.navigation.lists.length === 0);
+    check('queue playback off browse does not get_queue',
+      !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
+
     p.ws = { readyState: 1 };
     p.state.uri = OURS;
     p.state.title = 'Heat Waves';
@@ -881,6 +890,24 @@ async function main() {
       browseAdds[0].icon === undefined);
     check('remove browse uses the tile name',
       browseRemoves.length === 1 && browseRemoves[0] === 'Spotify Queue');
+
+    const off = newPlugin({ queue_playback: false });
+    off.ws = { readyState: 1 };
+    browseAdds.length = 0;
+    browseRemoves.length = 0;
+    off.addToBrowseSources();
+    check('queue playback off does not add the tile', browseAdds.length === 0);
+    off.syncBrowseSource();
+    check('queue playback off sync removes the tile',
+      browseRemoves.length === 1 && browseRemoves[0] === 'Spotify Queue');
+
+    const on = newPlugin({ queue_playback: true });
+    on.ws = { readyState: 1 };
+    browseAdds.length = 0;
+    browseRemoves.length = 0;
+    on.syncBrowseSource();
+    check('queue playback on sync adds the tile', browseAdds.length === 1);
+    check('queue playback on sync does not remove', browseRemoves.length === 0);
   }
 
   // 36. search is present and empty

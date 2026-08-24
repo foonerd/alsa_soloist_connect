@@ -637,9 +637,10 @@ SoloistConnect.prototype.connectWebSocket = function () {
   this.ws.on('open', () => {
     self.logger.info('SoloistConnect: WebSocket connected');
     self.fetchAudioSpec();
-    // Tile only after the daemon answers. A dead source with no WS is what
-    // Volumio's music-service docs tell us not to register.
-    self.addToBrowseSources();
+    // Tile only after the daemon answers, and only when queue playback is
+    // on. A dead source with no WS is what Volumio's music-service docs
+    // tell us not to register. Off must not advertise songs that skip.
+    self.syncBrowseSource();
     self.sendCommand({ command: 'get_state' });
   });
 
@@ -2174,9 +2175,11 @@ SoloistConnect.prototype.explodeUri = function (uri) {
 // playback_state.item, which we already keep on this.state. Opening the tile
 // asks get_queue when a session and a socket exist; a missed reply falls
 // back to the last event. Tapping a track is explodeUri, the path a mixed
-// list already uses. Nothing here calls play, pause, or skip.
+// list already uses. The tile is not registered when queue playback is
+// off: those songs would skip, which is what stopped playback on Integro.
 
 SoloistConnect.prototype.addToBrowseSources = function () {
+  if (!this.queuePlaybackEnabled()) return;
   if (typeof this.commandRouter.volumioAddToBrowseSources !== 'function') return;
   try {
     this.commandRouter.volumioAddToBrowseSources({
@@ -2198,6 +2201,17 @@ SoloistConnect.prototype.removeFromBrowseSources = function () {
   } catch (e) {
     this.logger.warn('SoloistConnect: could not remove browse source: ' + e.message);
   }
+};
+
+// Show the tile only when a tap can play. The setting is read here, not
+// only at start, so a Volumio-queue save adds or removes it without a
+// daemon restart.
+SoloistConnect.prototype.syncBrowseSource = function () {
+  if (this.queuePlaybackEnabled() && this.wsIsOpen()) {
+    this.addToBrowseSources();
+    return;
+  }
+  this.removeFromBrowseSources();
 };
 
 SoloistConnect.prototype.rememberQueue = function (msg) {
@@ -2389,7 +2403,7 @@ SoloistConnect.prototype.handleBrowseUri = function (curUri) {
   const defer = libQ.defer();
   const self = this;
   const uri = typeof curUri === 'string' ? curUri : '';
-  if (!this.isBrowseUri(uri)) {
+  if (!this.queuePlaybackEnabled() || !this.isBrowseUri(uri)) {
     defer.resolve(this.browsePage([]));
     return defer.promise;
   }
@@ -3010,6 +3024,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('queue_remote_playback', result.values.queue_remote_playback);
   this.config.set('verbose_logging', result.values.verbose_logging);
   this.clearPendingSeek();
+  this.syncBrowseSource();
 
   // Say what was actually applied. The requested size is clamped against
   // MemTotal in RAM mode, and RAM mode is refused outright on a board too small
