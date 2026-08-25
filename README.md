@@ -148,12 +148,48 @@ Environment names stay `APULSE_*`. They are historical; renaming is a later chan
 
 ## Packaging and install
 
+`volumio plugin install` must be run from the plugin tree (`soloist_connect/`), where `package.json` lives.
+
+### Store (accepted beta)
+
+In Volumio: **Plugins → Music Services** → **Spotify Soloist Connect**.
+
+That package can lag this repository.
+
+### Cutting edge — git
+
 ```
 cd /home/volumio
-mkdir -p soloist_connect && miniunzip soloist_connect.zip -d soloist_connect
+git clone --depth 1 --filter=blob:none --sparse https://github.com/foonerd/alsa_soloist_connect.git
+cd alsa_soloist_connect
+git sparse-checkout set soloist_connect
 cd soloist_connect
 volumio plugin install
 ```
+
+### Cutting edge — GitHub zip
+
+```
+cd /home/volumio
+wget -O alsa_soloist_connect-main.zip https://github.com/foonerd/alsa_soloist_connect/archive/refs/heads/main.zip
+miniunzip alsa_soloist_connect-main.zip
+cd alsa_soloist_connect-main/soloist_connect
+volumio plugin install
+```
+
+If the zip is already in `/home/volumio`, skip `wget` and run `miniunzip` on that file. The archive unpacks to `alsa_soloist_connect-main/soloist_connect/`.
+
+### Replacing a previous git or zip install
+
+1. Uninstall the plugin from the Volumio UI.
+2. Remove the old checkout, if it is still on the device:
+
+```
+cd /home/volumio
+sudo rm -rf alsa_soloist_connect alsa_soloist_connect-main
+```
+
+3. Reboot, then install again with git or zip as above.
 
 ### What the installer does
 
