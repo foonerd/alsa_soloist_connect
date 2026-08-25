@@ -84,6 +84,59 @@
       ]
     },
     {
+      "id": "soloist_convert",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_CONVERT",
+      "icon": "fa-exchange",
+      "description": "TRANSLATE.SECTION_CONVERT_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "convertPlaylist"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.CONVERT_PLAYLIST",
+        "data": [
+          "convert_playlist",
+          "convert_overwrite",
+          "convert_name"
+        ]
+      },
+      "content": [
+        {
+          "id": "convert_playlist",
+          "element": "select",
+          "label": "TRANSLATE.CONVERT_PLAYLIST_SELECT",
+          "doc": "TRANSLATE.CONVERT_PLAYLIST_SELECT_DOC",
+          "value": {
+            "value": "",
+            "label": "TRANSLATE.CONVERT_PLAYLIST_NONE"
+          },
+          "options": [
+            {
+              "value": "",
+              "label": "TRANSLATE.CONVERT_PLAYLIST_NONE"
+            }
+          ]
+        },
+        {
+          "id": "convert_overwrite",
+          "element": "switch",
+          "label": "TRANSLATE.CONVERT_OVERWRITE",
+          "doc": "TRANSLATE.CONVERT_OVERWRITE_DOC",
+          "value": false
+        },
+        {
+          "id": "convert_name",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.CONVERT_NAME",
+          "doc": "TRANSLATE.CONVERT_NAME_DOC",
+          "value": ""
+        }
+      ]
+    },
+    {
       "id": "soloist_sound",
       "element": "section",
       "label": "TRANSLATE.SECTION_SOUND",

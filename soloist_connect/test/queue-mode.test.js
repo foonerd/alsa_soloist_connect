@@ -21,6 +21,7 @@ const nextCalls = [];
 const browseAdds = [];
 const browseRemoves = [];
 const browsePushes = [];
+const toasts = [];
 let queueSaves = 0;
 let startPlaybackTimerCalls = 0;
 
@@ -50,6 +51,7 @@ function makeCtx() {
     volumioAddToBrowseSources(data) { browseAdds.push(data); },
     volumioRemoveToBrowseSources(name) { browseRemoves.push(name); },
     broadcastMessage(emit, payload) { browsePushes.push({ emit, payload }); },
+    pushToastMessage(type, title, msg) { toasts.push({ type, title, msg }); },
   };
   return {
     coreCommand,
@@ -1091,6 +1093,158 @@ async function main() {
     off.applySoloistVolume(50);
     check('align off still applies startup volume',
       offMixer.length === 1 && offMixer[0] === 50);
+  }
+
+  // 40. convert playlist rewrites only spop track rows
+  //
+  // hanger /data/playlist/Test is already soloist_connect + mpd. That shape
+  // is the write target. The stock plugin's lists still say spop.
+  {
+    const hangerTest = [
+      {
+        album: 'The Papercut Chronicles II',
+        albumart: 'https://i.scdn.co/image/ab67616d0000b27318b8088fe0c3dbf78398b55a',
+        artist: 'Gym Class Heroes, Adam Levine',
+        service: 'soloist_connect',
+        title: 'Stereo Hearts (feat. Adam Levine)',
+        uri: 'spotify:track:0qOnSQQF0yzuPWsXrQ9paz',
+      },
+      {
+        album: 'Brothers In Arms (Remastered Version)',
+        albumart: '/albumart?cacheid=113&web=Dire%20Straits/Brothers%20In%20Arms%20(Remastered%20Version)/extralarge&path=%2Fmnt%2FINTERNAL%2FDire%20Straits%2FBrothers%20In%20Arms%20(Remastered%20Version)&icon=fa-tags&metadata=false',
+        artist: 'Dire Straits',
+        service: 'mpd',
+        title: 'Walk Of Life',
+        uri: 'mnt/INTERNAL/Dire Straits/Brothers In Arms (Remastered Version)/03 - Walk Of Life.mp3',
+      },
+      {
+        album: 'Dopamine',
+        albumart: 'https://i.scdn.co/image/ab67616d0000b273cc2cf912462d8ae4ef856434',
+        artist: 'BØRNS',
+        service: 'soloist_connect',
+        title: 'Electric Love',
+        uri: 'spotify:track:2GiJYvgVaD2HtM8GqD9EgQ',
+      },
+      {
+        album: 'x (Deluxe Edition)',
+        albumart: '/albumart?cacheid=113&web=Ed%20Sheeran/x%20(Deluxe%20Edition)/extralarge&path=%2Fmnt%2FINTERNAL%2FEd%20Sheeran%2Fx%20(Deluxe%20Edition)&icon=fa-tags&metadata=false',
+        artist: 'Ed Sheeran',
+        service: 'mpd',
+        title: 'Thinking Out Loud',
+        uri: 'mnt/INTERNAL/Ed Sheeran/x (Deluxe Edition)/11 - Thinking Out Loud.mp3',
+      },
+    ];
+    const spopMixed = [
+      Object.assign({}, hangerTest[0], { service: 'spop' }),
+      hangerTest[1],
+      Object.assign({}, hangerTest[2], { service: 'spop' }),
+      hangerTest[3],
+      {
+        album: '',
+        albumart: '',
+        artist: '',
+        service: 'spop',
+        title: 'Daily Mix',
+        uri: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
+      },
+    ];
+
+    const p = newPlugin();
+    const already = p.convertPlaylistRows(hangerTest);
+    check('already converted list changes nothing', already.converted === 0);
+    check('already converted list keeps rows',
+      already.rows[0] === hangerTest[0] && already.rows[1] === hangerTest[1]);
+
+    const out = p.convertPlaylistRows(spopMixed);
+    check('spop tracks are counted', out.converted === 2 && out.total === 5);
+    check('spop tracks become soloist_connect',
+      out.rows[0].service === 'soloist_connect' &&
+      out.rows[2].service === 'soloist_connect');
+    check('converted uri and title stay put',
+      out.rows[0].uri === spopMixed[0].uri &&
+      out.rows[0].title === spopMixed[0].title);
+    check('mpd row is untouched',
+      out.rows[1] === spopMixed[1] && out.rows[1].service === 'mpd');
+    check('spop playlist uri stays spop',
+      out.rows[4].service === 'spop' && out.rows[4].uri === spopMixed[4].uri);
+
+    check('empty clone name uses (Soloist)',
+      p.playlistCloneName('Test', '') === 'Test (Soloist)');
+    check('custom clone name is trimmed',
+      p.playlistCloneName('Test', '  Mixed nights  ') === 'Mixed nights');
+    check('playlist name Test is allowed', p.playlistNameAllowed('Test') === true);
+    check('playlist name with slash is refused',
+      p.playlistNameAllowed('Test/foo') === false);
+    check('playlist name with dotdot is refused',
+      p.playlistNameAllowed('foo..bar') === false);
+    check('posted select object is the value',
+      p.postedPlaylistName({ value: 'Test', label: 'Test (2 Spotify rows)' }) === 'Test');
+
+    const store = { Test: hangerTest, Old: JSON.parse(JSON.stringify(spopMixed)) };
+    function stubLists(plugin) {
+      plugin.commandRouter.playListManager = {
+        playlistFolder: '/data/playlist/',
+        listPlaylist() { return Promise.resolve(Object.keys(store)); },
+        getPlaylistContent(name) { return Promise.resolve(store[name] || []); },
+        saveJSONFile(folder, name, rows) {
+          store[name] = rows;
+          logs.push('save ' + folder + name);
+          return Promise.resolve();
+        },
+      };
+    }
+
+    stubLists(p);
+    const options = await p.listConvertiblePlaylists();
+    check('already converted Test is not offered',
+      !options.some((o) => o.value === 'Test'));
+    check('spop list is offered with a count',
+      options.length === 1 && options[0].value === 'Old' &&
+      /2 Spotify rows/.test(options[0].label),
+      JSON.stringify(options));
+
+    toasts.length = 0;
+    logs.length = 0;
+    await p.convertPlaylist({ convert_playlist: 'Old', convert_overwrite: false });
+    check('clone writes Test-style dest name',
+      Object.prototype.hasOwnProperty.call(store, 'Old (Soloist)'));
+    check('clone leaves the source file',
+      store.Old[0].service === 'spop');
+    check('clone dest is hanger shape',
+      store['Old (Soloist)'][0].service === 'soloist_connect' &&
+      store['Old (Soloist)'][1].service === 'mpd');
+    check('clone toast names the dest',
+      toasts.some((t) => t.type === 'success' && /Old \(Soloist\)/.test(t.msg)),
+      JSON.stringify(toasts));
+
+    toasts.length = 0;
+    await p.convertPlaylist({ convert_playlist: 'Old', convert_overwrite: false });
+    check('clone refuses a dest that exists',
+      toasts.some((t) => t.type === 'error' && /already exists/.test(t.msg)));
+
+    toasts.length = 0;
+    await p.convertPlaylist({
+      convert_playlist: 'Old',
+      convert_overwrite: false,
+      convert_name: 'Bad/name',
+    });
+    check('clone refuses a dest with a slash',
+      toasts.some((t) => t.type === 'error' && /cannot contain/.test(t.msg)));
+
+    toasts.length = 0;
+    await p.convertPlaylist({ convert_playlist: 'Old', convert_overwrite: true });
+    check('overwrite rewrites the same file',
+      store.Old[0].service === 'soloist_connect' &&
+      store.Old[1].service === 'mpd' &&
+      store.Old[4].service === 'spop');
+    check('overwrite toast counts rows',
+      toasts.some((t) => t.type === 'success' && /Converted 2 of 5/.test(t.msg)),
+      JSON.stringify(toasts));
+
+    toasts.length = 0;
+    await p.convertPlaylist({ convert_playlist: 'Test', convert_overwrite: true });
+    check('overwrite of an already converted list is refused',
+      toasts.some((t) => t.type === 'error' && /no Spotify Connect/.test(t.msg)));
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');

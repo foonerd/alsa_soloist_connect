@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.7.4.**
+> **Alpha, version 0.7.5.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 

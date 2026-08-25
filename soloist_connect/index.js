@@ -2197,6 +2197,191 @@ SoloistConnect.prototype.explodeUri = function (uri) {
 };
 
 // ---------------------------------------------------------------------------
+// Convert a Volumio playlist saved by the stock Spotify plugin
+// ---------------------------------------------------------------------------
+//
+// Playback only accepts service soloist_connect. Lists saved under spop are
+// left alone at play time. This rewrite changes that field on track rows
+// and nothing else. Album/playlist/artist URIs stay spop: explodeUri would
+// skip them if we relabelled them.
+
+SoloistConnect.prototype.isConvertiblePlaylistRow = function (row) {
+  return !!(
+    row &&
+    row.service === 'spop' &&
+    typeof row.uri === 'string' &&
+    row.uri.indexOf('spotify:track:') === 0
+  );
+};
+
+SoloistConnect.prototype.convertPlaylistRows = function (rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let converted = 0;
+  let skipped = 0;
+  const out = list.map((row) => {
+    if (!this.isConvertiblePlaylistRow(row)) {
+      skipped++;
+      return row;
+    }
+    converted++;
+    const copy = Object.assign({}, row);
+    copy.service = this.servicename;
+    return copy;
+  });
+  return { rows: out, converted, skipped, total: list.length };
+};
+
+SoloistConnect.prototype.playlistNameAllowed = function (name) {
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  if (trimmed.indexOf('/') !== -1) return false;
+  if (trimmed.indexOf('\\') !== -1) return false;
+  if (trimmed.indexOf('..') !== -1) return false;
+  return true;
+};
+
+SoloistConnect.prototype.playlistCloneName = function (source, requested) {
+  const custom = typeof requested === 'string' ? requested.trim() : '';
+  if (custom) return custom;
+  return source + ' (Soloist)';
+};
+
+SoloistConnect.prototype.postedPlaylistName = function (raw) {
+  if (raw && typeof raw === 'object') return String(raw.value || '').trim();
+  return String(raw == null ? '' : raw).trim();
+};
+
+SoloistConnect.prototype.playlistManager = function () {
+  return this.commandRouter && this.commandRouter.playListManager;
+};
+
+SoloistConnect.prototype.listConvertiblePlaylists = function () {
+  const self = this;
+  const pm = this.playlistManager();
+  if (!pm || typeof pm.listPlaylist !== 'function') return libQ.resolve([]);
+  return libQ.resolve(pm.listPlaylist())
+    .then((names) => {
+      const list = Array.isArray(names) ? names : [];
+      let chain = libQ.resolve([]);
+      list.forEach((name) => {
+        chain = chain.then((opts) => {
+          if (!self.playlistNameAllowed(name)) return opts;
+          if (typeof pm.getPlaylistContent !== 'function') return opts;
+          return libQ.resolve(pm.getPlaylistContent(name))
+            .then((rows) => {
+              const n = self.convertPlaylistRows(rows).converted;
+              if (n) {
+                opts.push({
+                  value: name,
+                  label: name + ' (' + n + ' Spotify row' + (n === 1 ? '' : 's') + ')',
+                });
+              }
+              return opts;
+            })
+            .fail(() => opts);
+        });
+      });
+      return chain;
+    })
+    .fail(() => []);
+};
+
+SoloistConnect.prototype.playlistExists = function (name) {
+  const pm = this.playlistManager();
+  if (!pm || typeof pm.listPlaylist !== 'function') return libQ.resolve(false);
+  return libQ.resolve(pm.listPlaylist())
+    .then((names) => Array.isArray(names) && names.indexOf(name) !== -1)
+    .fail(() => false);
+};
+
+SoloistConnect.prototype.writeConvertedPlaylist = function (dest, result) {
+  const self = this;
+  const pm = this.playlistManager();
+  if (!pm || typeof pm.saveJSONFile !== 'function') {
+    return libQ.reject(new Error('Playlist manager cannot save'));
+  }
+  const folder = pm.playlistFolder || '/data/playlist/';
+  return libQ.resolve(pm.saveJSONFile(folder, dest, result.rows)).then(() => {
+    const playHint = self.queuePlaybackEnabled()
+      ? ''
+      : ' Turn on Play Spotify tracks from the Volumio queue to play them.';
+    self.commandRouter.pushToastMessage(
+      'success',
+      'Spotify Soloist',
+      'Converted ' + result.converted + ' of ' + result.total +
+        ' rows into "' + dest + '".' + playHint
+    );
+  });
+};
+
+SoloistConnect.prototype.convertPlaylist = function (data) {
+  const self = this;
+  const pm = this.playlistManager();
+  if (!pm || typeof pm.getPlaylistContent !== 'function') {
+    this.commandRouter.pushToastMessage(
+      'error', 'Spotify Soloist', 'Playlist manager is not available.'
+    );
+    return libQ.resolve();
+  }
+
+  const source = this.postedPlaylistName(data && data.convert_playlist);
+  const overwrite = !!(data && data.convert_overwrite);
+  if (!this.playlistNameAllowed(source)) {
+    this.commandRouter.pushToastMessage(
+      'error',
+      'Spotify Soloist',
+      'Select a playlist that still has Spotify Connect track rows.'
+    );
+    return libQ.resolve();
+  }
+
+  const dest = overwrite
+    ? source
+    : this.playlistCloneName(source, data && data.convert_name);
+  if (!this.playlistNameAllowed(dest)) {
+    this.commandRouter.pushToastMessage(
+      'error',
+      'Spotify Soloist',
+      'New playlist name cannot contain / \\ or ..'
+    );
+    return libQ.resolve();
+  }
+
+  return libQ.resolve(pm.getPlaylistContent(source))
+    .then((rows) => {
+      const result = self.convertPlaylistRows(rows);
+      if (!result.converted) {
+        self.commandRouter.pushToastMessage(
+          'error',
+          'Spotify Soloist',
+          'That playlist has no Spotify Connect track rows to convert.'
+        );
+        return libQ.resolve();
+      }
+      if (overwrite) return self.writeConvertedPlaylist(dest, result);
+      return self.playlistExists(dest).then((exists) => {
+        if (exists) {
+          self.commandRouter.pushToastMessage(
+            'error',
+            'Spotify Soloist',
+            'Playlist "' + dest + '" already exists.'
+          );
+          return libQ.resolve();
+        }
+        return self.writeConvertedPlaylist(dest, result);
+      });
+    })
+    .fail((e) => {
+      self.logger.error('SoloistConnect: playlist convert failed: ' + e);
+      self.commandRouter.pushToastMessage(
+        'error', 'Spotify Soloist', 'Could not convert that playlist.'
+      );
+      return libQ.resolve();
+    });
+};
+
+// ---------------------------------------------------------------------------
 // Spotify queue browse tile
 // ---------------------------------------------------------------------------
 //
@@ -2973,8 +3158,25 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('queue_playback', self.config.get('queue_playback') === true);
       set('queue_remote_playback', self.config.get('queue_remote_playback') === true);
       set('verbose_logging', self.config.get('verbose_logging') === true);
-      self.warnIfSpopStarted();
-      defer.resolve(uiconf);
+      set('convert_overwrite', false);
+      set('convert_name', '');
+      return self.listConvertiblePlaylists()
+        .then((options) => {
+          const el = findEl('convert_playlist');
+          if (el) {
+            const none = (el.options && el.options[0]) || {
+              value: '',
+              label: 'No Spotify Connect playlists found',
+            };
+            el.options = options.length ? options : [none];
+            el.value = options.length
+              ? { value: options[0].value, label: options[0].label }
+              : { value: none.value, label: none.label };
+          }
+          self.warnIfSpopStarted();
+          defer.resolve(uiconf);
+        })
+        .fail((e) => defer.reject(new Error('Failed loading UIConfig: ' + e)));
     })
     .fail((e) => defer.reject(new Error('Failed loading UIConfig: ' + e)));
 
