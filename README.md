@@ -156,7 +156,7 @@ In Volumio: **Plugins → Music Services** → **Spotify Soloist Connect**.
 
 That package can lag this repository.
 
-### Cutting edge — git
+### Cutting edge - git
 
 ```
 cd /home/volumio
@@ -167,7 +167,7 @@ cd soloist_connect
 volumio plugin install
 ```
 
-### Cutting edge — GitHub zip
+### Cutting edge - GitHub zip
 
 ```
 cd /home/volumio
