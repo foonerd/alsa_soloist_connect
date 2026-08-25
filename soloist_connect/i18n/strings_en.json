@@ -62,6 +62,6 @@
   "VERBOSE": "Verbose Logging",
   "VERBOSE_DOC": "Log every Soloist WebSocket event, and turn on the diagnostics in the audio shim: device lifecycle, per-second write counters, and what the shim does when ALSA reports a fault. Read with 'journalctl -u soloist -u volumio'. Changes no playback behaviour, but is noisy. Leave off unless investigating a problem.",
   "UPDATE_SECTION": "Binary Update",
-  "UPDATE_DESC": "Spotify Soloist builds expire 90 days after their build date. The plugin re-downloads automatically when the build expires, but you can also update manually here.",
+  "UPDATE_DESC": "Spotify Soloist builds expire 90 days after their build date. The plugin re-downloads automatically when the build expires. Updating here shows a progress modal, then a 15 second reboot countdown with Restart and Cancel. Do not power off while it downloads.",
   "UPDATE_BUTTON": "Update Soloist binary now"
 }

@@ -5,11 +5,10 @@ Build system and source for the **Spotify Soloist Connect** plugin for Volumio 4
 The plugin turns a Raspberry Pi or x86 Volumio 4 device into a Spotify Connect endpoint using [Spotify Soloist](https://developer.spotify.com/documentation/soloist), with audio leaving through `pcm.volumio`.
 There is no PulseAudio daemon and no PipeWire on the device.
 
-This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
+This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Alpha, version 0.7.6.**
-> Under active development, not ready for user testing.
-> Versioning and packaging will be revised before any release.
+> **Beta, version 0.8.0.**
+> This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
 > Not affiliated with, endorsed by or sponsored by Spotify AB.
@@ -473,7 +472,7 @@ The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u 
 
 ## Known limitations
 
-- **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button.
+- **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button. The button shows a progress modal, then a 15 second reboot countdown with Restart and Cancel. A failed download leaves the running binary alone.
 - **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in the shim instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.

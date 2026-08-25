@@ -35,7 +35,7 @@ Soloist looks up. No PulseAudio library code is redistributed. The shipped
 The Soloist binary is **not** contained in this repository and **not** contained
 in the plugin package.
 `soloist_connect/download-soloist.sh` fetches it from Spotify's official CDN on
-the device at install time, and the manual update button refetches it.
+the device at install time, and the manual update button refetches it, then offers a reboot countdown.
 This is deliberate: Spotify's documentation states that Soloist archives and
 binaries must not be redistributed, and that users should be linked to the
 official downloads page instead.

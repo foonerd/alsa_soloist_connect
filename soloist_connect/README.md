@@ -1,8 +1,8 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.7.6.**
-> This plugin is under active development and is not ready for general use.
-> Expect rough edges, and see "Things to know" below.
+> **Beta, version 0.8.0.**
+> First beta. Expect remaining rough edges, and see "Things to know" below.
+> This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
 Turns a Volumio 4 device into a Spotify Connect endpoint using Spotify Soloist.
 
@@ -27,7 +27,7 @@ You also need the device to reach Spotify's CDN, because the Soloist binary is d
 
 ## Setup
 
-1. Install the plugin. It is not in the Volumio plugin store yet; install the alpha package supplied to you.
+1. Install the plugin from the package supplied to you. An accepted build is published to the Volumio plugin store as a separate process and may lag this repository.
 2. Log in to the [Spotify for Developers dashboard](https://developer.spotify.com/dashboard) and generate a key on the [Spotify Soloist API Key](https://developer.spotify.com/dashboard/soloist) page.
 3. Open the plugin settings, paste the key, set a device name, and save.
 4. Open the Spotify app on the same network and pick the device.
@@ -67,7 +67,7 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Spotify Queue wait (ms) | Timing | 2500 | 0 to 10000. How long the Spotify Queue tile waits for `get_queue`. 0 shows the last event immediately. Does not restart. |
 | Verbose logging | Diagnostics | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics. Saving restarts so the shim picks it up. |
 
-The page also has an **update** button, which fetches a fresh Soloist build from Spotify and restarts the daemon.
+The page also has an **update** button, which fetches a fresh Soloist build from Spotify. A progress modal stays up while it downloads. On success a 15 second reboot countdown appears, with Restart and Cancel. A failed download leaves the running binary alone.
 
 ---
 
@@ -151,6 +151,7 @@ Volumio 4 (Debian Bookworm base) is required.
 **Soloist builds expire after 90 days.**
 This is a Spotify design decision, not a plugin limitation.
 The plugin checks on start and re-downloads automatically, and there is a manual update button.
+The button installs the new binary, then shows a 15 second reboot countdown with Restart and Cancel; a failed download does not replace what is already running.
 A device left powered off past the expiry will refresh on its next start, provided it can reach the internet.
 
 **Skip and seek are not instant.**
@@ -209,7 +210,7 @@ aplay -L | grep volumio
 
 Common cases:
 
-- **Nothing plays and the log shows exit code 10.** The Soloist build expired. Press the update button in the plugin settings.
+- **Nothing plays and the log shows exit code 10.** The Soloist build expired. Press the update button in the plugin settings. A successful update shows a 15 second reboot countdown.
 - **A Spotify row in a playlist does nothing, or the list jumps past it.** Queue playback is off by default. The row must be `soloist_connect`, not `spop`. Use **Convert playlist** on a saved list that still says `spop`. A paired session is required; if another device holds it the row is skipped unless remote play is on. If a conversion looks wrong, keep a copy of `/data/playlist/<name>` (URIs and titles, not an API key).
 - **The device does not appear in the Spotify app.** Check that the API key was saved, that the daemon is running, and that the device and phone are on the same network segment.
 - **Another source will not start while Spotify is connected.** Should not happen from 0.4.0 onwards. If it does, `journalctl -u volumio -f | grep -i soloist` around the moment you switch will show whether the device was released.

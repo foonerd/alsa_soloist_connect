@@ -3457,26 +3457,159 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
     });
 };
 
+SoloistConnect.prototype.runDownloadScript = function (callback) {
+  exec(this.downloadScript(), { timeout: 300000 }, callback);
+};
+
+SoloistConnect.prototype.coreI18n = function (key, fallback) {
+  try {
+    const s = this.commandRouter.getI18nString && this.commandRouter.getI18nString(key);
+    if (s && s !== key) return s;
+  } catch (e) { /* core string missing */ }
+  return fallback;
+};
+
+// Same contract as system install-to-disk: openModal({progress:true})
+// opens modal-progress.html; a follow-up modalProgress paints the bar.
+SoloistConnect.prototype.pushBinaryUpdateProgress = function (status, progressNumber, message) {
+  const data = {
+    progress: true,
+    progressNumber: progressNumber,
+    title: 'Spotify Soloist',
+    message: message,
+    size: 'lg',
+    buttons: []
+  };
+  let emit = 'modalProgress';
+  if (status === 'started') {
+    emit = 'openModal';
+  } else if (status === 'done' || status === 'error') {
+    emit = 'modalDone';
+    data.buttons = [{
+      name: this.coreI18n('COMMON.GOT_IT', 'Got it'),
+      class: 'btn btn-info ng-scope',
+      emit: 'closeModals',
+      payload: ''
+    }];
+  }
+  this.commandRouter.broadcastMessage(emit, data);
+  if (status === 'started') {
+    this.commandRouter.broadcastMessage('modalProgress', data);
+  }
+};
+
+// 15 s so the user can read it. Restart is COMMON.RESTART with the same
+// reboot emit I2S DAC and install-to-disk use; we call finishUpdateReboot
+// so the countdown is cleared first. Cancel starts the new binary instead.
+SoloistConnect.prototype.showUpdateRebootModal = function (seconds) {
+  this.commandRouter.broadcastMessage('openModal', {
+    title: 'Spotify Soloist',
+    message: 'Soloist binary updated. Your device will restart in ' + seconds + ' seconds.',
+    size: 'lg',
+    buttons: [
+      {
+        name: this.coreI18n('COMMON.RESTART', 'Restart'),
+        class: 'btn btn-info',
+        emit: 'callMethod',
+        payload: {
+          endpoint: 'music_service/soloist_connect',
+          method: 'finishUpdateReboot',
+          data: {}
+        }
+      },
+      {
+        name: this.coreI18n('COMMON.CANCEL', 'Cancel'),
+        class: 'btn btn-warning',
+        emit: 'callMethod',
+        payload: {
+          endpoint: 'music_service/soloist_connect',
+          method: 'cancelUpdateReboot',
+          data: {}
+        }
+      }
+    ]
+  });
+};
+
+SoloistConnect.prototype.clearUpdateRebootTimer = function () {
+  if (this.updateRebootTimer) {
+    clearInterval(this.updateRebootTimer);
+    this.updateRebootTimer = null;
+  }
+};
+
+SoloistConnect.prototype.finishUpdateReboot = function () {
+  this.clearUpdateRebootTimer();
+  if (typeof this.commandRouter.closeModals === 'function') {
+    this.commandRouter.closeModals();
+  }
+  this.logger.info('SoloistConnect: rebooting after Soloist binary update');
+  if (typeof this.commandRouter.reboot === 'function') {
+    this.commandRouter.reboot();
+  } else {
+    exec('/usr/bin/sudo /sbin/reboot', { timeout: 15000 }, () => {});
+  }
+};
+
+SoloistConnect.prototype.initUpdateRebootCountdown = function () {
+  const self = this;
+  self.updateRebootLeft = self.updateRebootSeconds || 15;
+  self.showUpdateRebootModal(self.updateRebootLeft);
+  self.updateRebootTimer = setInterval(function () {
+    self.updateRebootLeft -= 1;
+    if (self.updateRebootLeft > 0) {
+      self.showUpdateRebootModal(self.updateRebootLeft);
+    } else {
+      self.finishUpdateReboot();
+    }
+  }, 1000);
+};
+
+SoloistConnect.prototype.cancelUpdateReboot = function () {
+  const self = this;
+  self.clearUpdateRebootTimer();
+  self.binaryUpdateBusy = false;
+  if (typeof self.commandRouter.closeModals === 'function') {
+    self.commandRouter.closeModals();
+  }
+  self.commandRouter.pushToastMessage(
+    'info',
+    'Spotify Soloist',
+    'Reboot cancelled. The new Soloist binary is already installed.'
+  );
+  return libQ.resolve()
+    .then(() => self.startDaemon())
+    .then(() => self.connectWebSocket())
+    .fail((e) => {
+      self.logger.error('SoloistConnect: start after cancelled reboot failed: ' + e);
+      return libQ.resolve();
+    });
+};
+
 SoloistConnect.prototype.updateSoloistBinary = function () {
   const self = this;
   const defer = libQ.defer();
-  exec(
-    this.downloadScript(),
-    { timeout: 300000 },
-    (error) => {
-      if (error) {
-        self.commandRouter.pushToastMessage('error', 'Spotify Soloist', 'Update failed: ' + error);
-        defer.reject(error);
-      } else {
-        self.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Soloist binary updated.');
-        self.startDaemon()
-          .then(() => {
-            self.connectWebSocket();
-            defer.resolve();
-          })
-          .fail((e) => defer.reject(e));
-      }
-    }
+  if (self.binaryUpdateBusy) {
+    return libQ.resolve();
+  }
+  self.binaryUpdateBusy = true;
+  self.pushBinaryUpdateProgress(
+    'started',
+    10,
+    'Downloading a new Soloist binary. Do not power off.'
   );
+  this.runDownloadScript((error) => {
+    if (error) {
+      self.binaryUpdateBusy = false;
+      self.pushBinaryUpdateProgress('error', 0, 'Update failed: ' + error);
+      defer.reject(error);
+      return;
+    }
+    if (typeof self.commandRouter.closeModals === 'function') {
+      self.commandRouter.closeModals();
+    }
+    self.initUpdateRebootCountdown();
+    defer.resolve();
+  });
   return defer.promise;
 };

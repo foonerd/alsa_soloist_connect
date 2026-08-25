@@ -52,6 +52,14 @@ function makeCtx() {
     volumioRemoveToBrowseSources(name) { browseRemoves.push(name); },
     broadcastMessage(emit, payload) { browsePushes.push({ emit, payload }); },
     pushToastMessage(type, title, msg) { toasts.push({ type, title, msg }); },
+    reboot() { logs.push('reboot'); },
+    closeModals() { logs.push('closeModals'); },
+    getI18nString(key) {
+      if (key === 'COMMON.CANCEL') return 'Cancel';
+      if (key === 'COMMON.GOT_IT') return 'Got it';
+      if (key === 'COMMON.RESTART') return 'Restart';
+      return key;
+    },
   };
   return {
     coreCommand,
@@ -1245,6 +1253,70 @@ async function main() {
     await p.convertPlaylist({ convert_playlist: 'Test', convert_overwrite: true });
     check('overwrite of an already converted list is refused',
       toasts.some((t) => t.type === 'error' && /no Spotify Connect/.test(t.msg)));
+  }
+
+  // 41. manual binary update: progress modal, then 15s reboot countdown with Restart and Cancel
+  {
+    const p = newPlugin();
+    let started = 0;
+    let countdown = 0;
+    p.startDaemon = function () { started++; return Promise.resolve(); };
+    p.connectWebSocket = function () {};
+    p.initUpdateRebootCountdown = function () { countdown++; this.showUpdateRebootModal(15); };
+    p.runDownloadScript = function (cb) { cb(null); };
+    browsePushes.length = 0;
+    logs.length = 0;
+    toasts.length = 0;
+    await p.updateSoloistBinary();
+    check('success opens the system progress modal',
+      browsePushes.some((e) => e.emit === 'openModal' && e.payload.progress === true &&
+        /Do not power off/.test(e.payload.message)));
+    check('success paints the progress bar',
+      browsePushes.some((e) => e.emit === 'modalProgress' && e.payload.progressNumber === 10));
+    check('success starts the 15s countdown instead of the daemon',
+      countdown === 1 && started === 0);
+    check('countdown modal has Restart, Cancel and 15 seconds',
+      browsePushes.some((e) => e.emit === 'openModal' && !e.payload.progress &&
+        /15 seconds/.test(e.payload.message) &&
+        e.payload.buttons[0].name === 'Restart' &&
+        e.payload.buttons[0].payload.method === 'finishUpdateReboot' &&
+        e.payload.buttons[1].name === 'Cancel' &&
+        e.payload.buttons[1].payload.method === 'cancelUpdateReboot'));
+
+    const fail = newPlugin();
+    fail.startDaemon = function () { started++; return Promise.resolve(); };
+    fail.initUpdateRebootCountdown = function () { countdown++; };
+    fail.runDownloadScript = function (cb) { cb(new Error('curl fail')); };
+    browsePushes.length = 0;
+    try {
+      await fail.updateSoloistBinary();
+      check('failed download rejects', false);
+    } catch (e) {
+      check('failed download rejects', /curl fail/.test(String(e)));
+    }
+    check('failed download stays on the progress modal',
+      browsePushes.some((e) => e.emit === 'modalDone' && /Update failed/.test(e.payload.message)));
+    check('failed download does not reboot or start the daemon',
+      countdown === 1 && started === 0 && !logs.includes('reboot'));
+
+    const cancel = newPlugin();
+    cancel.startDaemon = function () { started++; return Promise.resolve(); };
+    cancel.connectWebSocket = function () {};
+    logs.length = 0;
+    toasts.length = 0;
+    cancel.updateRebootTimer = setInterval(function () {}, 60000);
+    await cancel.cancelUpdateReboot();
+    check('cancel stops the countdown and starts the new binary',
+      cancel.updateRebootTimer === null && logs.includes('closeModals') &&
+      started === 1 && !logs.includes('reboot'));
+    check('cancel says the binary is already installed',
+      toasts.some((t) => t.type === 'info' && /already installed/.test(t.msg)));
+
+    const finish = newPlugin();
+    logs.length = 0;
+    finish.finishUpdateReboot();
+    check('countdown end closes the modal and reboots',
+      logs.includes('closeModals') && logs.includes('reboot'));
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
