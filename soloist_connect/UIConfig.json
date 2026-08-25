@@ -98,6 +98,7 @@
         "label": "TRANSLATE.SAVE_RESTART",
         "data": [
           "initial_volume",
+          "align_volume",
           "output_trim_db",
           "buffer_ms"
         ]
@@ -118,6 +119,13 @@
               "max": 100
             }
           ]
+        },
+        {
+          "id": "align_volume",
+          "element": "switch",
+          "label": "TRANSLATE.ALIGN_VOLUME",
+          "doc": "TRANSLATE.ALIGN_VOLUME_DOC",
+          "value": false
         },
         {
           "id": "output_trim_db",

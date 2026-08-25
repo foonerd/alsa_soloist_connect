@@ -11,6 +11,10 @@
     "type": "number",
     "value": 50
   },
+  "align_volume": {
+    "type": "boolean",
+    "value": false
+  },
   "cache_size_mb": {
     "type": "number",
     "value": 1024

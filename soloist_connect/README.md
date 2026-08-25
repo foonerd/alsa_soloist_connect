@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.7.3.**
+> **Alpha, version 0.7.4.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -51,7 +51,8 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Device name | Spotify | `Volumio` | The name shown in the Spotify app. Saving restarts. |
 | Play Spotify tracks from the Volumio queue | Volumio queue | off | A `soloist_connect` row in a Volumio playlist or queue plays through Soloist. On also shows the Spotify Queue tile on Browse. Off hides the tile and skips those rows. Does not restart. |
 | Let a queued track play on the active Spotify device | Volumio queue | off | Only with the setting above. If the session sits on a phone or another speaker, the row plays there instead of being skipped. The list may wait on it. Does not restart. |
-| Initial volume | Sound | 50 | 0 to 100. Saving restarts. |
+| Initial volume | Sound | 50 | 0 to 100. Saving restarts. Unused when Align volume on start is on, except as a fallback if Volumio has no mixer. |
+| Align volume on start | Sound | off | Copy Volumio's volume to Spotify when this speaker becomes the active Connect device, instead of applying Initial Volume. Saving restarts. |
 | Output trim (dB) | Sound | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Saving restarts. |
 | Output buffer (ms) | Sound | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Saving restarts. |
 | Cache location | Cache | Disk | **Disk** survives a reboot. **RAM** takes writes off a slow SD card, costs that much memory, and is emptied on every reboot and daemon restart. Saving restarts. |
@@ -109,6 +110,8 @@ Switching source in Volumio does not end the Connect session, so pressing play o
 
 When Volumio has a mixer, hardware or software, that mixer does the attenuation and the Spotify app's slider moves it.
 The stream itself stays at full scale, which is what VU meters and other per-source metering need: the needles follow the music rather than the volume knob.
+
+By default Soloist starts at **Initial volume** and that value is mirrored to the mixer. That can yank the knob if you were already listening at another level. **Align volume on start** copies Volumio's volume onto Spotify instead, the same way the stock Spotify plugin does when the speaker becomes active. Off by default.
 
 With the mixer set to `None` there is nothing downstream to attenuate, so the volume is applied to the stream instead.
 

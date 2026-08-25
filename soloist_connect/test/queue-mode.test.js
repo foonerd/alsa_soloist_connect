@@ -42,6 +42,7 @@ function makeCtx() {
   const coreCommand = {
     stateMachine: sm,
     volumioGetState() { return { service: 'other' }; },
+    volumiosetvolume(v) { logs.push('mixer ' + v); },
     volumioStop() { return { then: (f) => { f(); return { then: (g) => { g(); return { fail: () => {} }; } }; } }; },
     pluginManager: { getPlugin: () => null },
     servicePushState(state) { pushed.push(JSON.parse(JSON.stringify(state))); },
@@ -524,7 +525,7 @@ async function main() {
     const stored = {
       api_key: 'k', device_name: 'Volumio', initial_volume: 50,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 500,
-      output_trim_db: 0, verbose_logging: false,
+      output_trim_db: 0, verbose_logging: false, align_volume: false,
       queue_playback: false, queue_remote_playback: false,
     };
     p.config = { get: (key) => stored[key] };
@@ -535,6 +536,14 @@ async function main() {
       p.daemonSettingsChanged(Object.assign(same, { queue_fetch_ms: 1000 })) === false);
     check('a daemon setting does restart',
       p.daemonSettingsChanged(Object.assign({}, stored, { buffer_ms: 400 })) === true);
+    check('align volume on restarts',
+      p.daemonSettingsChanged(Object.assign({}, stored, { align_volume: true })) === true);
+    check('initial volume change restarts when align is off',
+      p.daemonSettingsChanged(Object.assign({}, stored, { initial_volume: 20 })) === true);
+    stored.align_volume = true;
+    check('initial volume change does not restart when align is on',
+      p.daemonSettingsChanged(Object.assign({}, stored, { initial_volume: 20 })) === false);
+    stored.align_volume = false;
   }
 
   // 21b. a section save posts only its own fields
@@ -545,6 +554,7 @@ async function main() {
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 300,
       output_trim_db: 4, verbose_logging: true,
       retain_api_key: true, queue_playback: false, queue_remote_playback: false,
+      align_volume: false,
       seek_coalesce_ms: 200, inactive_hold_ms: 2000,
       quality_retry_ms: 300, quality_retry_max: 2,
       queue_fetch_ms: 2500,
@@ -557,6 +567,7 @@ async function main() {
     check('partial save is accepted', result.ok === true, result.message);
     check('partial save keeps the API key', result.values.api_key === 'k');
     check('partial save keeps volume', result.values.initial_volume === 35);
+    check('partial save keeps align off', result.values.align_volume === false);
     check('partial save keeps trim', result.values.output_trim_db === 4);
     check('partial save keeps verbose', result.values.verbose_logging === true);
     check('partial save sets queue on', result.values.queue_playback === true);
@@ -1011,6 +1022,75 @@ async function main() {
       bad.ok === false && /Queue fetch wait/.test(bad.message), bad.message);
     const zero = p.validateSettings({ queue_fetch_ms: 0 });
     check('queue fetch 0 saves', zero.ok === true && zero.values.queue_fetch_ms === 0);
+  }
+
+  // 39. align volume copies the Volumio knob to Soloist and does not yank the mixer
+  {
+    const mixer = [];
+    const p = newPlugin({ align_volume: true, initial_volume: 50 });
+    p.mixerIsExternal = () => true;
+    p.commandRouter.volumioGetState = () => ({ volume: 20, mute: false });
+    p.commandRouter.volumiosetvolume = (v) => mixer.push(v);
+    p.volatileSet = true;
+    logs.length = 0;
+
+    check('align seeds daemon from the knob', p.initialVolumeForDaemon() === 20);
+    check('align off seeds daemon from initial volume',
+      newPlugin({ align_volume: false, initial_volume: 50 }).initialVolumeForDaemon() === 50);
+
+    p.applySoloistVolume(50);
+    check('startup volume is not applied before align', mixer.length === 0);
+
+    p.updateActive({ is_active: true });
+    check('becoming active sends Volumio volume to Soloist',
+      logs.some((l) => l === 'cmd {"command":"set_volume","volume":20}'),
+      logs.join(' | '));
+    check('align does not write the mixer', mixer.length === 0);
+
+    p.applySoloistVolume(50);
+    check('initial Soloist volume is ignored after align', mixer.length === 0);
+
+    p.applySoloistVolume(20);
+    check('echo of the aligned volume is ignored', mixer.length === 0);
+
+    p.applySoloistVolume(40);
+    check('later app slider moves the mixer', mixer.length === 1 && mixer[0] === 40);
+
+    const muted = newPlugin({ align_volume: true });
+    muted.mixerIsExternal = () => true;
+    muted.commandRouter.volumioGetState = () => ({ volume: 20, mute: true });
+    logs.length = 0;
+    muted.updateActive({ is_active: true });
+    check('mute aligns as zero',
+      logs.some((l) => l === 'cmd {"command":"set_volume","volume":0}'));
+
+    const none = newPlugin({ align_volume: true });
+    none.mixerIsExternal = () => false;
+    none.commandRouter.volumioGetState = () => ({ volume: 20 });
+    logs.length = 0;
+    none.updateActive({ is_active: true });
+    check('no mixer does not align',
+      !logs.some((l) => l.indexOf('set_volume') !== -1));
+
+    const disabled = newPlugin({ align_volume: true });
+    disabled.mixerIsExternal = () => true;
+    disabled.commandRouter.volumioGetState = () => ({
+      volume: 20, disableVolumeControl: true,
+    });
+    logs.length = 0;
+    disabled.updateActive({ is_active: true });
+    check('disabled volume control does not align',
+      !logs.some((l) => l.indexOf('set_volume') !== -1));
+
+    const off = newPlugin({ align_volume: false });
+    off.mixerIsExternal = () => true;
+    off.active = true;
+    off.volatileSet = true;
+    const offMixer = [];
+    off.commandRouter.volumiosetvolume = (v) => offMixer.push(v);
+    off.applySoloistVolume(50);
+    check('align off still applies startup volume',
+      offMixer.length === 1 && offMixer[0] === 50);
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');

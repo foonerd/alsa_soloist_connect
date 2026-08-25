@@ -117,6 +117,12 @@ function SoloistConnect(context) {
   this.lastSentVolume = -1;
   this.volumeFromSoloist = false;
   this.pendingMixerVolume = null;
+  // When align_volume is on, Soloist's --initial-volume is not written to
+  // the mixer. volumeAligned is set after we copy Volumio's knob to Soloist;
+  // volumeAlignPending ignores the daemon's first reports until they match.
+  this.volumeAligned = false;
+  this.volumeAlignPending = false;
+  this.volumeAlignTimer = null;
   this.quality = '';       // Spotify tier for the current track, '' until known
   this.qualityUri = '';    // track the last measurement was taken against
   this.qualityPath = '';   // cache file that track was reading from
@@ -467,7 +473,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
   const lines = [
     `API_KEY="${esc(this.config.get('api_key'))}"`,
     `DEVICE_NAME="${esc(this.config.get('device_name'))}"`,
-    `INITIAL_VOLUME="${this.config.get('initial_volume')}"`,
+    `INITIAL_VOLUME="${this.initialVolumeForDaemon()}"`,
     `CACHE_SIZE="${cacheSize}"`,
     // Read by cache-location.sh from the unit's ExecStartPre. "ram" is written
     // only when the board can actually carry it; otherwise this stays "disk"
@@ -648,6 +654,7 @@ SoloistConnect.prototype.connectWebSocket = function () {
     // on. A dead source with no WS is what Volumio's music-service docs
     // tell us not to register. Off must not advertise songs that skip.
     self.syncBrowseSource();
+    self.alignToVolumioVolume();
     self.sendCommand({ command: 'get_state' });
   });
 
@@ -679,6 +686,7 @@ SoloistConnect.prototype.connectWebSocket = function () {
 };
 
 SoloistConnect.prototype.disconnectWebSocket = function () {
+  this.resetVolumeAlign();
   this.resolveQueueWaiters(this.spotifyQueue);
   if (this.wsReconnectTimer) {
     clearTimeout(this.wsReconnectTimer);
@@ -933,8 +941,10 @@ SoloistConnect.prototype.updateActive = function (msg) {
       this.clearInactiveHold();
       this.logger.info('SoloistConnect: hold yield cancelled');
     }
-    if (!this.active) this.activatedAt = Date.now();
+    const becameActive = !this.active;
+    if (becameActive) this.activatedAt = Date.now();
     this.active = true;
+    if (becameActive) this.alignToVolumioVolume();
     return;
   }
   if (this.inactiveHoldTimer) return;
@@ -946,6 +956,7 @@ SoloistConnect.prototype.updateActive = function (msg) {
   const yieldNow = () => {
     this.inactiveHoldTimer = null;
     this.active = false;
+    this.resetVolumeAlign();
     this.unsetVolatile();
   };
   if (holdMs <= 0) {
@@ -2761,15 +2772,94 @@ SoloistConnect.prototype.commitMixerVolume = function (rounded) {
 
 SoloistConnect.prototype.flushPendingMixerVolume = function () {
   if (this.pendingMixerVolume == null) return;
+  if (this.alignVolumeEnabled() && (!this.volumeAligned || this.volumeAlignPending)) {
+    return;
+  }
   if (!this.mixerIsExternal() || !this.active || !this.owningPlayback()) return;
   const rounded = this.pendingMixerVolume;
   this.pendingMixerVolume = null;
   this.commitMixerVolume(rounded);
 };
 
+SoloistConnect.prototype.alignVolumeEnabled = function () {
+  return this.config.get('align_volume') === true;
+};
+
+// --initial-volume is unused on the mixer when align is on. Seed the daemon
+// from the knob so the first Connect report is already close.
+SoloistConnect.prototype.initialVolumeForDaemon = function () {
+  if (!this.alignVolumeEnabled()) return this.config.get('initial_volume');
+  const v = this.volumioVolumeForAlign();
+  return v == null ? this.config.get('initial_volume') : v;
+};
+
+SoloistConnect.prototype.volumioVolumeForAlign = function () {
+  if (!this.mixerIsExternal()) return null;
+  let state;
+  try {
+    state = this.commandRouter.volumioGetState();
+  } catch (e) {
+    return null;
+  }
+  if (!state || state.disableVolumeControl === true) return null;
+  if (state.mute === true) return 0;
+  if (typeof state.volume !== 'number' || isNaN(state.volume)) return null;
+  return Math.max(0, Math.min(100, Math.round(state.volume)));
+};
+
+SoloistConnect.prototype.resetVolumeAlign = function () {
+  this.volumeAligned = false;
+  this.volumeAlignPending = false;
+  if (this.volumeAlignTimer) {
+    clearTimeout(this.volumeAlignTimer);
+    this.volumeAlignTimer = null;
+  }
+};
+
+// Stock Spotify copies the Volumio knob onto the daemon when this speaker
+// becomes the active Connect device. Without that, --initial-volume (50)
+// arrives as volume_changed and yanks the mixer.
+SoloistConnect.prototype.alignToVolumioVolume = function () {
+  if (!this.alignVolumeEnabled()) return;
+  if (!this.deviceActive && !this.active) return;
+  if (this.volumeAligned) return;
+
+  const v = this.volumioVolumeForAlign();
+  this.volumeAligned = true;
+  if (v == null) {
+    this.volumeAlignPending = false;
+    return;
+  }
+
+  this.volumeAlignPending = true;
+  this.lastSentVolume = v;
+  this.state.volume = v;
+  this.pendingMixerVolume = null;
+  this.logger.info('SoloistConnect: align volume to Volumio ' + v);
+  this.sendCommand({ command: 'set_volume', volume: v });
+  if (this.volumeAlignTimer) clearTimeout(this.volumeAlignTimer);
+  this.volumeAlignTimer = setTimeout(() => {
+    this.volumeAlignTimer = null;
+    this.volumeAlignPending = false;
+  }, 2000);
+};
+
 SoloistConnect.prototype.applySoloistVolume = function (vol) {
   if (typeof vol !== 'number' || isNaN(vol)) return;
   const rounded = Math.round(vol);
+  if (this.alignVolumeEnabled() && !this.volumeAligned) return;
+  if (this.alignVolumeEnabled() && this.volumeAlignPending) {
+    if (Math.abs(rounded - this.lastSentVolume) < 2) {
+      this.volumeAlignPending = false;
+      if (this.volumeAlignTimer) {
+        clearTimeout(this.volumeAlignTimer);
+        this.volumeAlignTimer = null;
+      }
+      this.lastSentVolume = rounded;
+      this.state.volume = rounded;
+    }
+    return;
+  }
   this.state.volume = rounded;
 
   if (Math.abs(rounded - this.lastSentVolume) < 2) {
@@ -2870,6 +2960,7 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('retain_api_key', self.config.get('retain_api_key') === true);
       set('device_name', self.config.get('device_name') || 'Volumio');
       set('initial_volume', self.config.get('initial_volume'));
+      set('align_volume', self.config.get('align_volume') === true);
       set('cache_size_mb', self.config.get('cache_size_mb'));
       setSelect('cache_location', self.config.get('cache_location'), 'disk');
       set('buffer_ms', self.config.get('buffer_ms'));
@@ -3022,6 +3113,9 @@ SoloistConnect.prototype.validateSettings = function (data) {
         ? (this.config.get('device_name') || 'Volumio')
         : ((data.device_name || '').trim() || 'Volumio'),
       initial_volume: initialVolume.value,
+      align_volume: this.postedOrStoredBool(
+        data, 'align_volume', this.config.get('align_volume')
+      ),
       cache_size_mb: cacheSize.value,
       cache_location: cacheLocation,
       buffer_ms: bufferMs.value,
@@ -3067,7 +3161,6 @@ SoloistConnect.prototype.parseOptionalMs = function (raw, key, fallback, max) {
 const DAEMON_SETTINGS = [
   'api_key',
   'device_name',
-  'initial_volume',
   'cache_size_mb',
   'cache_location',
   'buffer_ms',
@@ -3078,6 +3171,13 @@ const DAEMON_SETTINGS = [
 SoloistConnect.prototype.daemonSettingsChanged = function (values) {
   for (const key of DAEMON_SETTINGS) {
     if (this.config.get(key) !== values[key]) return true;
+  }
+  const alignNow = this.config.get('align_volume') === true;
+  const alignNext = values.align_volume === true;
+  if (alignNow !== alignNext) return true;
+  // While align is on, --initial-volume is taken from the Volumio knob.
+  if (!alignNext && this.config.get('initial_volume') !== values.initial_volume) {
+    return true;
   }
   return false;
 };
@@ -3098,6 +3198,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   this.config.set('api_key', result.values.api_key);
   this.config.set('device_name', result.values.device_name);
   this.config.set('initial_volume', result.values.initial_volume);
+  this.config.set('align_volume', result.values.align_volume);
   this.config.set('cache_size_mb', result.values.cache_size_mb);
   this.config.set('cache_location', result.values.cache_location);
   this.config.set('buffer_ms', result.values.buffer_ms);
