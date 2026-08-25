@@ -147,9 +147,10 @@ echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlen
 # CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.
 #
 # Soloist has no --api-key-file and no env. The real key has to be on argv
-# at exec. The shim overwrites that slot on the first pa_* call so `ps`
-# and logsubmit see SHIM_API_KEY_DECOY, not the secret. Drop API_KEY from
-# the inherited environment so /proc/PID/environ is clean too.
+# at exec. The shim overwrites that slot two seconds after load (and on
+# the first pa_* call) so `ps` and logsubmit see SHIM_API_KEY_DECOY, not
+# the secret. Drop API_KEY from the inherited environment so
+# /proc/PID/environ is clean too.
 ARGS=(
   --device-name "$DEVICE_NAME"
   --api-key "$API_KEY"

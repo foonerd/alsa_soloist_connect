@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.7.5.**
+> **Alpha, version 0.7.6.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -216,7 +216,7 @@ Common cases:
 - **Install failed with "Pulse shim ... is not in the plugin package".** The package was built without the libraries for this architecture. Report it, including the architecture reported by `dpkg --print-architecture`.
 
 When reporting a problem, **never post your API key, unredacted logs, crash reports or the contents of `/data/soloist`.**
-Redact before sharing.
+Redact before sharing. From 0.7.6, `ps` should show `nice-try-logsubmit` in place of the key about two seconds after Soloist starts. A log taken in that window, or an older plugin, can still contain the real key.
 
 ---
 

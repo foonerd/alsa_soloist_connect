@@ -2,6 +2,7 @@
 #include "shim.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,12 +11,14 @@
 #include <unistd.h>
 
 /*
- * What `ps` and logsubmit show after Pulse comes up. Must be shorter than a
- * real Soloist key. Soloist only accepts --api-key on argv, so the genuine
- * key is there from exec until the first pa_* call; then we overwrite the
- * argv slot. Do not put the real value in any log line.
+ * What `ps` and logsubmit show. Must be shorter than a real Soloist key.
+ * Soloist only accepts --api-key on argv. The constructor runs before
+ * main(), so this must not scrub in the constructor itself. First pa_*
+ * is too late: an idle daemon still shows the secret in logsubmit.
+ * Sleep after load, then overwrite the slot. Do not log the real value.
  */
 #define SHIM_API_KEY_DECOY "nice-try-logsubmit"
+#define SHIM_API_KEY_SCRUB_DELAY_US 2000000
 
 static int
 read_arg_range(unsigned long *start, unsigned long *end)
@@ -88,6 +91,32 @@ shim_scrub_cmdline_secrets(void)
         }
         p = next;
     }
+}
+
+static void *
+scrub_cmdline_later(void *unused)
+{
+    (void)unused;
+    usleep(SHIM_API_KEY_SCRUB_DELAY_US);
+    shim_scrub_cmdline_secrets();
+    return NULL;
+}
+
+__attribute__((constructor))
+static void
+shim_start_cmdline_scrub(void)
+{
+    pthread_t t;
+    pthread_attr_t attr;
+
+    if (pthread_attr_init(&attr) != 0)
+        return;
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &attr, scrub_cmdline_later, NULL) != 0) {
+        pthread_attr_destroy(&attr);
+        return;
+    }
+    pthread_attr_destroy(&attr);
 }
 
 void
