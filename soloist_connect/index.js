@@ -142,6 +142,13 @@ function SoloistConnect(context) {
   // written into Volumio's play queue.
   this.spotifyQueue = { previous: [], upcoming: [] };
   this.queueWaiters = [];
+  // True after handleBrowseUri for our tile. Unsolicited queue_changed is
+  // capped at 10; a watching tile asks get_queue again so the page stays
+  // complete. Cleared when the tile is removed.
+  this.browseWatching = false;
+  this.browseRefreshTimer = null;
+  this.browseRefreshInFlight = false;
+  this.browseRefreshDirty = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1300,7 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       this.loggedIn = msg.logged_in === true;
       this.updateActive(msg);
       if (msg.logged_in) this.sendCommand({ command: 'get_state' });
+      this.pushQueueBrowse();
       break;
 
     case 'playback_state':
@@ -1305,6 +1313,7 @@ SoloistConnect.prototype.handleEvent = function (msg) {
         this.setStatus(msg.status);
         this.applyPosition(msg.position);
         if (incomingUri) this.applyItem(msg.item);
+        if (incomingUri && incomingUri !== prevUri) this.scheduleBrowseRefresh();
         // Active with no item and nothing held: a handover that arrived as a
         // bare state. Ask rather than publish a blank.
         else if (this.active && !this.state.uri) this.requestStateRefresh();
@@ -1339,11 +1348,16 @@ SoloistConnect.prototype.handleEvent = function (msg) {
       ) {
         this.cacheItem(msg.item);
         this.endQueueRow('track_changed to ' + this.itemUri(msg.item));
+        this.scheduleBrowseRefresh();
         break;
       }
       if (this.itemUri(msg.item)) this.applyItem(msg.item);
       this.logVerbose('track_changed uri=' + (this.state.uri || '') +
         ' title=' + JSON.stringify(this.state.title || ''));
+      // Now playing on the tile can move immediately; upcoming is refreshed
+      // with a full get_queue because the broadcast event is capped at 10.
+      this.pushQueueBrowse();
+      this.scheduleBrowseRefresh();
       if (!this.state.uri) this.requestStateRefresh();
       else this.pushStateNow();
       break;
@@ -1378,7 +1392,12 @@ SoloistConnect.prototype.handleEvent = function (msg) {
         for (const row of rows) {
           if (row && row.item) this.cacheItem(row.item);
         }
+        const waiting = this.queueWaiters.length > 0;
         this.rememberQueue(msg);
+        // A get_queue reply is the full list. An unsolicited event is not;
+        // ask again if the tile is open so the page does not shrink to 10.
+        if (waiting) this.pushQueueBrowse();
+        else this.scheduleBrowseRefresh();
       }
       break;
 
@@ -2195,6 +2214,8 @@ SoloistConnect.prototype.addToBrowseSources = function () {
 };
 
 SoloistConnect.prototype.removeFromBrowseSources = function () {
+  this.browseWatching = false;
+  this.clearBrowseRefreshTimer();
   if (typeof this.commandRouter.volumioRemoveToBrowseSources !== 'function') return;
   try {
     this.commandRouter.volumioRemoveToBrowseSources(BROWSE_NAME);
@@ -2342,7 +2363,7 @@ SoloistConnect.prototype.browseSongsFromRows = function (rows, skipUri) {
   for (const row of rows) {
     if (!row || !row.item) continue;
     const uri = this.itemUri(row.item);
-    if (!uri || uri === skipUri) continue;
+    if (!uri || uri === skipUri || uri.indexOf('spotify:track:') !== 0) continue;
     const song = this.browseItemFromEntity(row.item);
     if (song) items.push(song);
   }
@@ -2367,7 +2388,7 @@ SoloistConnect.prototype.buildQueueBrowse = function (queue) {
   for (const row of upcoming) {
     if (!row || !row.item) continue;
     const uri = this.itemUri(row.item);
-    if (!uri || uri === skip) continue;
+    if (!uri || uri === skip || uri.indexOf('spotify:track:') !== 0) continue;
     const song = this.browseItemFromEntity(row.item);
     if (!song) continue;
     if (row.source === 'autoplay') autoplay.push(song);
@@ -2399,15 +2420,82 @@ SoloistConnect.prototype.isBrowseUri = function (uri) {
   return uri === BROWSE_URI || uri.indexOf(BROWSE_URI + '/') === 0;
 };
 
+SoloistConnect.prototype.clearBrowseRefreshTimer = function () {
+  if (this.browseRefreshTimer) {
+    clearTimeout(this.browseRefreshTimer);
+    this.browseRefreshTimer = null;
+  }
+};
+
+// Rebuild the open tile. Volumio browse is request/response; this is the
+// only way an open page sees queue_changed. Sections stay split.
+SoloistConnect.prototype.pushQueueBrowse = function (queue) {
+  if (!this.browseWatching || !this.queuePlaybackEnabled()) return;
+  if (typeof this.commandRouter.broadcastMessage !== 'function') return;
+  try {
+    this.commandRouter.broadcastMessage(
+      'pushBrowseLibrary',
+      this.buildQueueBrowse(queue || this.spotifyQueue)
+    );
+  } catch (e) {
+    this.logger.warn('SoloistConnect: could not refresh browse: ' + e.message);
+  }
+};
+
+// Unsolicited queue_changed is capped at 10. Ask for the full list, and
+// collapse a track_changed + queue_changed pair into one get_queue.
+SoloistConnect.prototype.scheduleBrowseRefresh = function () {
+  if (!this.browseWatching || !this.queuePlaybackEnabled()) return;
+  if (this.browseRefreshInFlight) {
+    this.browseRefreshDirty = true;
+    return;
+  }
+  if (this.browseRefreshTimer) return;
+  const self = this;
+  this.browseRefreshTimer = setTimeout(function () {
+    self.browseRefreshTimer = null;
+    self.refreshQueueBrowse();
+  }, 50);
+};
+
+SoloistConnect.prototype.refreshQueueBrowse = function () {
+  if (!this.browseWatching || !this.queuePlaybackEnabled()) return;
+  if (this.browseRefreshInFlight) {
+    this.browseRefreshDirty = true;
+    return;
+  }
+  if (!this.loggedIn || !this.wsIsOpen()) {
+    this.pushQueueBrowse();
+    return;
+  }
+  this.browseRefreshInFlight = true;
+  this.browseRefreshDirty = false;
+  const self = this;
+  this.fetchSpotifyQueue()
+    .then(function (queue) {
+      self.browseRefreshInFlight = false;
+      self.pushQueueBrowse(queue);
+      if (self.browseRefreshDirty) self.scheduleBrowseRefresh();
+    })
+    .fail(function () {
+      self.browseRefreshInFlight = false;
+      self.pushQueueBrowse();
+      if (self.browseRefreshDirty) self.scheduleBrowseRefresh();
+    });
+};
+
 SoloistConnect.prototype.handleBrowseUri = function (curUri) {
   const defer = libQ.defer();
   const self = this;
   const uri = typeof curUri === 'string' ? curUri : '';
   if (!this.queuePlaybackEnabled() || !this.isBrowseUri(uri)) {
+    this.browseWatching = false;
+    this.clearBrowseRefreshTimer();
     defer.resolve(this.browsePage([]));
     return defer.promise;
   }
 
+  this.browseWatching = true;
   this.fetchSpotifyQueue()
     .then(function (queue) {
       defer.resolve(self.buildQueueBrowse(queue));

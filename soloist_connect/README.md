@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Alpha, version 0.7.2.**
+> **Alpha, version 0.7.3.**
 > This plugin is under active development and is not ready for general use.
 > Expect rough edges, and see "Things to know" below.
 
@@ -165,7 +165,7 @@ That is what it is: memory, not storage. Saving Spotify, Sound, Cache or Diagnos
 `soloist_connect`, not `spop`. Old playlists are not rewritten. With queue playback off, those rows still appear and are skipped when reached.
 
 **The Spotify Queue tile is this speaker's Connect list.**
-It appears on Browse only when **Play Spotify tracks from the Volumio queue** is on and Soloist is connected. Now playing, play next, up next, autoplay and recently played come from `get_queue`. That is not Volumio's mixed playlist, and there is no Spotify library browse or search.
+It appears on Browse only when **Play Spotify tracks from the Volumio queue** is on and Soloist is connected. Now playing, play next, up next, autoplay and recently played come from `get_queue` and stay in those sections. While the tile is open, a track change or `queue_changed` refreshes the page (a full `get_queue`, because the unsolicited event is capped at 10). That is not Volumio's mixed playlist, and there is no Spotify library browse or search.
 
 ---
 

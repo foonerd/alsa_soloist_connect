@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds two things: the plugin that ships to the Volumio plugin store, and the in-tree Pulse shim the plugin carries.
 
-> **Alpha, version 0.7.2.**
+> **Alpha, version 0.7.3.**
 > Under active development, not ready for user testing.
 > Versioning and packaging will be revised before any release.
 
@@ -271,7 +271,7 @@ A row that cannot play (setting off, not logged in, not a track URI, or another 
 
 The row ends on buffering within 1.5 s of duration, idle after first audio, `track_changed` to another URI, or a roll. `endQueueRow` waits for ALSA if we still hold it. `startPlaybackTimer` is not called when metadata arrives: that would arm a second seek clock. Duration is written onto `currentSongDuration` instead.
 
-`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile that is registered only while `queue_playback` is on. Soloist's upcoming list is not pushed into Volumio's play queue.
+`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile that is registered only while `queue_playback` is on. An open tile is refreshed from those events (full `get_queue`, because a broadcast `queue_changed` is capped at 10). Soloist's upcoming list is not pushed into Volumio's play queue.
 
 Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value.
 

@@ -20,6 +20,7 @@ const queuePushes = [];
 const nextCalls = [];
 const browseAdds = [];
 const browseRemoves = [];
+const browsePushes = [];
 let queueSaves = 0;
 let startPlaybackTimerCalls = 0;
 
@@ -47,6 +48,7 @@ function makeCtx() {
     volumioPushQueue(q) { queuePushes.push(JSON.parse(JSON.stringify(q))); },
     volumioAddToBrowseSources(data) { browseAdds.push(data); },
     volumioRemoveToBrowseSources(name) { browseRemoves.push(name); },
+    broadcastMessage(emit, payload) { browsePushes.push({ emit, payload }); },
   };
   return {
     coreCommand,
@@ -738,6 +740,23 @@ async function main() {
       page.navigation.lists[1].items[0].service === 'soloist_connect');
     check('browse songs are songs',
       page.navigation.lists[1].items[0].type === 'song');
+
+    const withPlaceholder = p.buildQueueBrowse({
+      previous: [],
+      upcoming: [
+        { item: rolledItem, source: 'context' },
+        {
+          item: {
+            uri: 'spotify:meta:node_rules_placeholder',
+            entity_type: 'unknown',
+            decorations: { playback: { duration_ms: 0 } },
+          },
+          source: 'context',
+        },
+      ],
+    });
+    check('browse drops placeholder rows',
+      withPlaceholder.navigation.lists.find((l) => l.title === 'Up next').items.length === 1);
   }
 
   // 29. logged out browse does not leak the last queue
@@ -910,14 +929,74 @@ async function main() {
     check('queue playback on sync does not remove', browseRemoves.length === 0);
   }
 
-  // 36. search is present and empty
+  // 36. an open tile is refreshed from Spotify events; a closed one is not
+  {
+    const closed = newPlugin();
+    browsePushes.length = 0;
+    logs.length = 0;
+    closed.handleEvent({
+      type: 'queue_changed',
+      previous: [],
+      upcoming: [{ item: rolledItem, source: 'context' }],
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    check('closed tile does not get_queue on queue_changed',
+      !logs.some((l) => l.indexOf('get_queue') !== -1), logs.join(' | '));
+    check('closed tile does not push browse', browsePushes.length === 0);
+
+    const p = newPlugin();
+    p.ws = { readyState: 1 };
+    p.state.uri = OURS;
+    p.state.title = 'Heat Waves';
+    browsePushes.length = 0;
+    logs.length = 0;
+    const pending = p.handleBrowseUri('soloist_connect');
+    p.handleEvent({
+      type: 'queue_changed',
+      previous: [],
+      upcoming: [{ item: rolledItem, source: 'queue' }],
+    });
+    await pending;
+    check('open reply pushes the tile',
+      browsePushes.length >= 1 && browsePushes[0].emit === 'pushBrowseLibrary');
+    const opened = browsePushes[browsePushes.length - 1].payload;
+    check('open reply keeps play next',
+      opened.navigation.lists.some((l) => l.title === 'Play next'));
+    check('open reply keeps now playing',
+      opened.navigation.lists.some((l) => l.title === 'Now playing'));
+
+    logs.length = 0;
+    browsePushes.length = 0;
+    p.handleEvent({ type: 'track_changed', item: rolledItem });
+    check('track_changed paints now playing',
+      browsePushes.length >= 1 &&
+      browsePushes[0].payload.navigation.lists[0].items[0].uri === ROLLED,
+      JSON.stringify(browsePushes[0] && browsePushes[0].payload.navigation.lists[0]));
+    await new Promise((r) => setTimeout(r, 80));
+    check('open tile asks get_queue after a change',
+      logs.some((l) => l === 'cmd {"command":"get_queue","limit":0}'),
+      logs.join(' | '));
+
+    const off = newPlugin({ queue_playback: false });
+    off.browseWatching = true;
+    off.ws = { readyState: 1 };
+    browsePushes.length = 0;
+    logs.length = 0;
+    off.handleEvent({ type: 'track_changed', item: item });
+    await new Promise((r) => setTimeout(r, 80));
+    check('queue playback off does not refresh browse',
+      browsePushes.length === 0 &&
+      !logs.some((l) => l.indexOf('get_queue') !== -1));
+  }
+
+  // 37. search is present and empty
   {
     const p = newPlugin();
     const out = await p.search({ value: 'heat' });
     check('search returns nothing', out === undefined);
   }
 
-  // 37. queue fetch wait is a timing setting, default 2500
+  // 38. queue fetch wait is a timing setting, default 2500
   {
     const unset = newPlugin();
     check('queue fetch default', unset.queueFetchMs() === 2500);
