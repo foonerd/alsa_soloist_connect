@@ -502,13 +502,52 @@ SoloistConnect.prototype.writeEnvFile = function () {
   fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
 };
 
-SoloistConnect.prototype.playbackDevice = function () {
-  if (this.config.get('peppy_metering') !== true) return 'plug:volumio';
-  try {
-    const conf = fs.readFileSync('/etc/asound.conf', 'utf8');
-    if (/^\s*pcm\.spotify\s*\{/m.test(conf)) return 'plug:spotify';
-  } catch (e) { /* stay on volumio */ }
+// pcm.volumio's slave.pcm only. Does not walk nested slave { } blocks.
+// hanger / 3B+ / Hardware: volumioMultiRoomServer or volumioOutput.
+// Software mixer with nothing above SoftMaster: softvolume.
+SoloistConnect.prototype.volumioDirectSlave = function (conf) {
+  const text = String(conf || '');
+  const start = text.search(/^\s*pcm\.volumio\s*\{/m);
+  if (start < 0) return '';
+  const brace = text.indexOf('{', start);
+  if (brace < 0) return '';
+  let depth = 0;
+  let end = -1;
+  for (let i = brace; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return '';
+  const block = text.slice(brace, end + 1);
+  const quoted = block.match(/^\s*slave\.pcm\s+"([^"]+)"/m);
+  if (quoted) return quoted[1];
+  const bare = block.match(/^\s*slave\.pcm\s+(\S+)/m);
+  return bare ? bare[1].replace(/;$/, '') : '';
+};
+
+// Peppy wins when pcm.spotify exists. Otherwise open softvolume only when
+// that is already pcm.volumio's slave (maroen: empty → SoftMaster). Extra
+// plug:volumio + FLOAT32 + 882 asserts on PCM2704; softvolume plays.
+// Switcher / Fusion / Hardware stay on plug:volumio.
+SoloistConnect.prototype.resolvePlaybackDevice = function (conf, peppyMetering) {
+  const text = String(conf || '');
+  if (peppyMetering && /^\s*pcm\.spotify\s*\{/m.test(text)) return 'plug:spotify';
+  if (this.volumioDirectSlave(text) === 'softvolume') return 'softvolume';
   return 'plug:volumio';
+};
+
+SoloistConnect.prototype.playbackDevice = function () {
+  let conf = '';
+  try {
+    conf = fs.readFileSync('/etc/asound.conf', 'utf8');
+  } catch (e) { /* missing asound: plug:volumio */ }
+  return this.resolvePlaybackDevice(conf, this.config.get('peppy_metering') === true);
 };
 
 // What the running unit was launched with. Unreadable is not a mismatch:

@@ -1319,6 +1319,44 @@ async function main() {
       logs.includes('closeModals') && logs.includes('reboot'));
   }
 
+  // 41. playback device: Peppy, switcher, Hardware, and SoftMaster-only
+  {
+    const p = newPlugin();
+    const maroenSoftware =
+      'pcm.volumio {\n    type             empty\n    slave.pcm       "softvolume"\n}\n' +
+      'pcm.softvolume {\n    type            plug\n    slave {\n        pcm         "volumioSoftVol"\n' +
+      '        format      "S24_3LE"\n    }\n}\n';
+    const hangerSwitcher =
+      'pcm.volumio {\n    type             empty\n    slave.pcm       "volumioMultiRoomServer"\n}\n' +
+      'pcm.softvolume {\n    type            plug\n}\n' +
+      'pcm.spotify {\n  type plug\n}\n';
+    const hardware =
+      'pcm.volumio {\n    type             empty\n    slave.pcm       "volumioOutput"\n}\n';
+    const localPlayback =
+      'pcm.volumioLocalPlayback {\n    type empty\n    slave.pcm "softvolume"\n}\n' +
+      'pcm.volumio {\n    type empty\n    slave.pcm "volumioOutput"\n}\n';
+
+    check('SoftMaster-only Software opens softvolume',
+      p.resolvePlaybackDevice(maroenSoftware, false) === 'softvolume');
+    check('Peppy metering wins over SoftMaster-only',
+      p.resolvePlaybackDevice(maroenSoftware + 'pcm.spotify {\n  type plug\n}\n', true) ===
+        'plug:spotify');
+    check('switcher stays on plug:volumio',
+      p.resolvePlaybackDevice(hangerSwitcher, false) === 'plug:volumio');
+    check('Peppy + switcher opens plug:spotify',
+      p.resolvePlaybackDevice(hangerSwitcher, true) === 'plug:spotify');
+    check('Hardware stays on plug:volumio',
+      p.resolvePlaybackDevice(hardware, false) === 'plug:volumio');
+    check('volumioLocalPlayback slave is not pcm.volumio',
+      p.resolvePlaybackDevice(localPlayback, false) === 'plug:volumio');
+    check('empty asound stays on plug:volumio',
+      p.resolvePlaybackDevice('', false) === 'plug:volumio');
+    check('slave name is empty → softvolume only',
+      p.volumioDirectSlave(maroenSoftware) === 'softvolume' &&
+      p.volumioDirectSlave(hangerSwitcher) === 'volumioMultiRoomServer' &&
+      p.volumioDirectSlave(hardware) === 'volumioOutput');
+  }
+
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
   process.exit(failures === 0 ? 0 : 1);
 }

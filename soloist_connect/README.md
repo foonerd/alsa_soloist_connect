@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.0.**
+> **Beta, version 0.8.1.**
 > First beta. Expect remaining rough edges, and see "Things to know" below.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 

@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.0.**
+> **Beta, version 0.8.1.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -394,7 +394,7 @@ PeppyMeter meters per source rather than across the whole chain. Its contributio
 
 It cannot rewrite this plugin's configuration the way it rewrites `spop`'s YAML, so it calls `setPeppyMetering(bool)` instead. That stores `peppy_metering`, rewrites the env file, and restarts the daemon when the running process is on the wrong device.
 
-`playbackDevice()` resolves the result: `plug:spotify` when metering is on **and** `pcm.spotify` is actually present in `/etc/asound.conf`, otherwise `plug:volumio`. The setting alone is not enough, because that PCM only exists once PeppyMeter has rendered its contribution; without the check a restart would try to open a device that is not there.
+`playbackDevice()` resolves the result: `plug:spotify` when metering is on **and** `pcm.spotify` is actually present in `/etc/asound.conf`; `softvolume` when `pcm.volumio`'s slave is already `softvolume` (Software mixer with nothing above SoftMaster — an extra `plug:` around that graph asserts on PCM2704); otherwise `plug:volumio`. The Peppy setting alone is not enough, because that PCM only exists once PeppyMeter has rendered its contribution; without the check a restart would try to open a device that is not there.
 
 The other direction is covered on start. `syncPeppyMeteringFromPeppy()` asks PeppyMeter's `soloistMeteringWanted()` and adopts the answer, so the two plugins agree whichever is enabled second.
 
