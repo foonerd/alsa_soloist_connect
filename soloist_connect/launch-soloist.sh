@@ -141,7 +141,27 @@ fi
 # is left alone.
 rm -f /data/soloist/data/crashpad/pending/*.lock 2>/dev/null || true
 
-echo "SoloistConnect: userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB diag=${APULSE_DIAG:-off} uname=$(uname -m)" >&2
+# Always. A pasted journal has to name the plugin and the .so that ran,
+# including when Verbose logging is off. package.json / SOURCE.md are the
+# shipped labels; SOURCE_REVISION is the git that built the library in
+# APULSE_DIR (the override dir when APULSE_DIR_OVERRIDE is set).
+PLUGIN_VER=unknown
+if [ -f "$PLUGIN_DIR/package.json" ]; then
+  PLUGIN_VER=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_DIR/package.json" | head -n 1)
+  [ -n "$PLUGIN_VER" ] || PLUGIN_VER=unknown
+fi
+SHIM_VER=unknown
+if [ -f "$PLUGIN_DIR/alsa-lib/SOURCE.md" ]; then
+  SHIM_VER=$(sed -n 's/.*Library version is \*\*\([^*]*\)\*\*.*/\1/p' "$PLUGIN_DIR/alsa-lib/SOURCE.md" | head -n 1)
+  [ -n "$SHIM_VER" ] || SHIM_VER=unknown
+fi
+SHIM_REV=missing
+if [ -f "$APULSE_DIR/SOURCE_REVISION" ]; then
+  SHIM_REV=$(tr -d '[:space:]' < "$APULSE_DIR/SOURCE_REVISION")
+  [ -n "$SHIM_REV" ] || SHIM_REV=missing
+fi
+
+echo "SoloistConnect: plugin=$PLUGIN_VER shim=$SHIM_VER rev=$SHIM_REV userspace=$APULSE_ARCH device=$APULSE_PLAYBACK_DEVICE tlength_cap=${APULSE_MAX_TLENGTH_MS}ms external_volume=${EXTERNAL_VOLUME:-false} trim=${OUTPUT_TRIM_DB:-0}dB diag=${APULSE_DIAG:-off} uname=$(uname -m)" >&2
 
 # writeEnvFile() always emits API_KEY, DEVICE_NAME, INITIAL_VOLUME,
 # CACHE_SIZE and EXTERNAL_VOLUME, and validates them before writing.

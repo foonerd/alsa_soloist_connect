@@ -488,7 +488,7 @@ What triggers the first underrun is still open. Recovery from one is correct; th
 
 ### Reading a playback fault
 
-Every diagnostic in the shim is behind `APULSE_DIAG`. The plugin's **Verbose logging** switch sets it, via `VERBOSE_LOGGING` in the env file and `launch-soloist.sh`. The startup line reports `diag=1` or `diag=off` so a capture states its own provenance.
+Every diagnostic in the shim is behind `APULSE_DIAG`. The plugin's **Verbose logging** switch sets it, via `VERBOSE_LOGGING` in the env file and `launch-soloist.sh`. The startup line is always printed. It reports `plugin=`, `shim=`, `rev=` (the `SOURCE_REVISION` next to the `.so` that will load), and `diag=1` or `diag=off` so a capture states its own provenance.
 
 What it makes visible, none of which reaches the journal otherwise:
 

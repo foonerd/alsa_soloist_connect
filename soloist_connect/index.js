@@ -236,9 +236,40 @@ SoloistConnect.prototype.getConfigurationFiles = function () {
   return ['config.json'];
 };
 
+// Shipped package.json and alsa-lib/SOURCE.md. Not gated behind verbose:
+// a capture has to say which plugin and which shim it came from, including
+// when the daemon never starts (no API key).
+SoloistConnect.prototype.pluginVersion = function () {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    const v = pkg && pkg.version;
+    return typeof v === 'string' && v.trim() ? v.trim() : 'unknown';
+  } catch (e) {
+    return 'unknown';
+  }
+};
+
+SoloistConnect.prototype.shimVersion = function () {
+  try {
+    const text = fs.readFileSync(path.join(__dirname, 'alsa-lib', 'SOURCE.md'), 'utf8');
+    const m = String(text).match(/Library version is \*\*([^*]+)\*\*/);
+    return m && m[1].trim() ? m[1].trim() : 'unknown';
+  } catch (e) {
+    return 'unknown';
+  }
+};
+
+SoloistConnect.prototype.logPluginIdentity = function () {
+  this.logger.info(
+    'SoloistConnect: plugin=' + this.pluginVersion() + ' shim=' + this.shimVersion()
+  );
+};
+
 SoloistConnect.prototype.onStart = function () {
   const defer = libQ.defer();
   const self = this;
+
+  this.logPluginIdentity();
 
   if (!this.volumeCallbackRegistered) {
     this.commandRouter.addCallback('volumioupdatevolume', (vol) => {

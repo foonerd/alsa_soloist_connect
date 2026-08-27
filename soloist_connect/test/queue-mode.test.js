@@ -1357,6 +1357,24 @@ async function main() {
       p.volumioDirectSlave(hardware) === 'volumioOutput');
   }
 
+  // 42. identity line reads the shipped package.json and SOURCE.md
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const source = fs.readFileSync(path.join(__dirname, '..', 'alsa-lib', 'SOURCE.md'), 'utf8');
+    const shim = source.match(/Library version is \*\*([^*]+)\*\*/);
+    const p = newPlugin();
+    logs.length = 0;
+    p.logPluginIdentity();
+    check('plugin version is package.json',
+      p.pluginVersion() === pkg.version && typeof pkg.version === 'string' && pkg.version.length > 0);
+    check('shim version is SOURCE.md',
+      p.shimVersion() === shim[1] && typeof shim[1] === 'string' && shim[1].length > 0);
+    check('identity line is always logged',
+      logs.some((m) => m === 'info SoloistConnect: plugin=' + pkg.version + ' shim=' + shim[1]));
+  }
+
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
   process.exit(failures === 0 ? 0 : 1);
 }
