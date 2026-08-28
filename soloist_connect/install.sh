@@ -84,11 +84,14 @@ Restart=on-failure
 RestartSec=5
 # Exit code 10 = build expired; don't loop, the plugin re-downloads on next start
 RestartPreventExitStatus=10
-
-[Install]
-WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+# Plugin onStart / onStop are the only start and stop. No [Install]
+# WantedBy: an enabled unit would come back at boot with the plugin disabled
+# and still be a Connect endpoint. Clear a leftover enable from an older
+# install. Start is systemctl restart from the plugin, which works while
+# disabled.
+systemctl disable --now soloist.service 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Sudo rules: start/stop/restart the service. Filename must be
@@ -101,9 +104,11 @@ cat > "$SUDOERS_FILE" << 'EOF'
 volumio ALL=(ALL) NOPASSWD: /bin/systemctl start soloist.service
 volumio ALL=(ALL) NOPASSWD: /bin/systemctl stop soloist.service
 volumio ALL=(ALL) NOPASSWD: /bin/systemctl restart soloist.service
+volumio ALL=(ALL) NOPASSWD: /bin/systemctl disable soloist.service
 volumio ALL=(ALL) NOPASSWD: /usr/bin/systemctl start soloist.service
 volumio ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop soloist.service
 volumio ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart soloist.service
+volumio ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable soloist.service
 volumio ALL=(ALL) NOPASSWD: /bin/bash /data/plugins/music_service/soloist_connect/download-soloist.sh
 volumio ALL=(ALL) NOPASSWD: /usr/bin/bash /data/plugins/music_service/soloist_connect/download-soloist.sh
 volumio ALL=(ALL) NOPASSWD: /bin/bash /data/plugins/music_service/soloist_connect/setup-glibc.sh

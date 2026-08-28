@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.1.**
+> **Beta, version 0.8.2.**
 > First beta. Expect remaining rough edges, and see "Things to know" below.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
@@ -148,6 +148,9 @@ Volumio 4 (Debian Bookworm base) is required.
 
 ## Things to know
 
+**Disabling the plugin stops the Soloist daemon.**
+It is then not a Spotify Connect endpoint. Pause and Volumio Stop do not stop the service; that is so resume stays instant.
+
 **Soloist builds expire after 90 days.**
 This is a Spotify design decision, not a plugin limitation.
 The plugin checks on start and re-downloads automatically, and there is a manual update button.
@@ -193,7 +196,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.8.1 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.8.2 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

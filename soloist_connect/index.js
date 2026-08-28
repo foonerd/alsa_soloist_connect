@@ -319,7 +319,12 @@ SoloistConnect.prototype.onStop = function () {
   this.disconnectWebSocket();
   this.unsetVolatile();
   this.setMpdIgnoreUpdate(false);
-  exec(`/usr/bin/sudo /bin/systemctl stop ${SERVICE_UNIT}`, () => defer.resolve());
+  // Stop and unpin from boot. start/restart from onStart still work on a
+  // disabled unit. disable without this left WantedBy=multi-user.target
+  // able to bring the daemon back with the plugin off.
+  exec(`/usr/bin/sudo /bin/systemctl stop ${SERVICE_UNIT}`, () => {
+    exec(`/usr/bin/sudo /bin/systemctl disable ${SERVICE_UNIT}`, () => defer.resolve());
+  });
   return defer.promise;
 };
 

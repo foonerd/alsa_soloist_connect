@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.1.**
+> **Beta, version 0.8.2.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -209,7 +209,7 @@ flowchart TD
     K -->|"no"| M["trixie libc6 into /data/soloist/sysroot"]
     M --> N["patch-soloist.sh sets ELF interpreter"]
     B --> O["systemd unit soloist.service"]
-    B --> P["sudoers rules for start, stop, restart, update"]
+    B --> P["sudoers rules for start, stop, restart, disable, update"]
 ```
 
 Notable points:
@@ -218,6 +218,7 @@ Notable points:
 - Bookworm's glibc is 2.36 and Soloist needs 2.38 or newer. A private sysroot is sideloaded into `/data/soloist/sysroot` and the binary is ELF-patched against it. The system glibc is left alone. Launching through an explicit `ld-linux` instead of patching breaks Soloist's subprocesses.
 - The launcher exports the ALSA device as `APULSE_PLAYBACK_DEVICE`, derived from `PLAYBACK_DEVICE` in the env file. The names are historical. The unit deliberately does **not** pin the device: the launcher treats an existing value as an override, so a pinned unit would win permanently and PeppyMeter metering would silently do nothing. `unpin-playback-device.sh` removes the line from older installs. The launcher also exports `APULSE_MAX_TLENGTH_MS`, `APULSE_YIELD_PATH`, `APULSE_EXTERNAL_VOLUME` and, when non-zero, `APULSE_OUTPUT_TRIM_DB`.
 - Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; the plugin re-downloads on the next start.
+- The unit has no `[Install]` `WantedBy`. Plugin `onStart` restarts it; `onStop` stops it and disables it so a leftover enable cannot bring the daemon back at boot with the plugin off.
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
 ---
