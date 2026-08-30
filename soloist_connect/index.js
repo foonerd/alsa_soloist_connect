@@ -13,6 +13,10 @@ const WS_PORT = 9878; // fixed local port for the Soloist WebSocket API
 const ENV_FILE = '/data/soloist/soloist.env';
 const CACHE_DIR = '/data/soloist/cache';
 const YIELD_PATH = '/data/soloist/alsa.yield';
+// Connect yield only. Core syncState applies play|pause while isVolatile.
+// status=stop drops volatileService, re-pushes the last play frame, then
+// skips us against the leftover queue row. Set to 'stop' to undo this step.
+const CONNECT_LEAVE_STATUS = 'pause';
 
 // RAM cache ceiling, as a fraction of MemTotal.
 //
@@ -2027,11 +2031,22 @@ SoloistConnect.prototype.setVolatile = function () {
   this.publishOnClaim();
 };
 
+// pause is account-wide. After the session has left this speaker, sending
+// one here stops the phone or desktop that now holds it.
+SoloistConnect.prototype.pauseIfOurs = function () {
+  if (!this.deviceActive) return;
+  this.sendCommand({ command: 'pause' });
+};
+
 SoloistConnect.prototype.unsetVolatile = function () {
   this.clearPendingSeek();
   this.clearInactiveHold();
   this.resetQuality();
   if (!this.volatileSet) return;
+  // Pause, not stop: see CONNECT_LEAVE_STATUS. endQueueRow still publishes
+  // stop after leaving queue mode; that is what syncState turns into next().
+  this.state.status = CONNECT_LEAVE_STATUS;
+  const snapshot = this.stateSnapshot();
   this.volatileSet = false;
   this.setMpdIgnoreUpdate(false);
   if (this.pushStateTimer) {
@@ -2045,8 +2060,9 @@ SoloistConnect.prototype.unsetVolatile = function () {
   this.pendingMixerVolume = null;
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
-  this.sendCommand({ command: 'pause' });
+  this.pauseIfOurs();
   this.waitAlsaReleasedSync(2000);
+  this.publishState(snapshot);
 
   try {
     this.context.coreCommand.stateMachine.unSetVolatile();
@@ -2213,7 +2229,7 @@ SoloistConnect.prototype.endQueueRow = function (reason) {
   this.clearPendingSeek();
   this.clearQualityRetry();
   this.stopSeekTimer();
-  this.sendCommand({ command: 'pause' });
+  this.pauseIfOurs();
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
   this.state.status = 'stop';
@@ -2976,7 +2992,7 @@ SoloistConnect.prototype.stop = function () {
   this.setMpdIgnoreUpdate(false);
   this.pendingYieldAt = Date.now();
   this.requestAlsaYield();
-  this.sendCommand({ command: 'pause' });
+  this.pauseIfOurs();
   const self = this;
   return this.waitUntil(function () { return !this.alsaHeldByUs(); }, 2000)
     .then(function () {

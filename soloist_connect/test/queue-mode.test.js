@@ -1489,6 +1489,116 @@ async function main() {
       logs.some((m) => m === 'info SoloistConnect: plugin=' + pkg.version + ' shim=' + shim[1]));
   }
 
+  // 44. pause is not sent after the session has left this speaker
+  {
+    function pauseCmds() {
+      return logs.filter((l) => l === 'cmd {"command":"pause"}');
+    }
+
+    {
+      const p = newPlugin({ queue_playback: false, inactive_hold_ms: 0 });
+      p.deviceActive = true;
+      p.active = true;
+      p.volatileSet = true;
+      p.state.status = 'play';
+      p.state.title = 'Heat Waves';
+      p.state.uri = OURS;
+      p.context.coreCommand.stateMachine.setVolatile({
+        service: 'soloist_connect',
+        callback: p.unsetVolatile.bind(p),
+      });
+      logs.length = 0;
+      pushed.length = 0;
+      nextCalls.length = 0;
+      p.updateActive({ is_active: false });
+      check('transfer-away yield is requested',
+        logs.indexOf('yield requested') !== -1, logs.join(' | '));
+      check('transfer-away yield does not pause Spotify',
+        pauseCmds().length === 0, logs.join(' | '));
+      check('transfer-away drops volatile', p.volatileSet === false);
+      check('connect yield publishes pause',
+        pushed.length === 1 && pushed[0].status === 'pause',
+        JSON.stringify(pushed[0] || null));
+      check('connect yield pause keeps the title',
+        pushed[0] && pushed[0].title === 'Heat Waves',
+        JSON.stringify(pushed[0] || null));
+      check('connect yield does not call next()', nextCalls.length === 0,
+        String(nextCalls.length));
+    }
+
+    {
+      const p = newPlugin({ inactive_hold_ms: 0 });
+      p.deviceActive = true;
+      p.active = true;
+      p.queueMode = true;
+      p.volatileSet = false;
+      logs.length = 0;
+      pushed.length = 0;
+      nextCalls.length = 0;
+      p.updateActive({ is_active: false });
+      check('queue mode does not yield on is_active=false',
+        logs.indexOf('yield requested') === -1 && p.queueMode === true,
+        logs.join(' | '));
+      check('queue mode inactive does not publish stop', pushed.length === 0,
+        JSON.stringify(pushed[0] || null));
+      check('queue mode inactive does not call next()', nextCalls.length === 0);
+    }
+
+    {
+      const p = newPlugin();
+      p.volatileSet = true;
+      p.state.status = 'play';
+      p.state.title = 'Heat Waves';
+      p.context.coreCommand.stateMachine.setVolatile({
+        service: 'soloist_connect',
+        callback: p.unsetVolatile.bind(p),
+      });
+      pushed.length = 0;
+      nextCalls.length = 0;
+      p.leaveVolatileForQueue();
+      check('leave volatile for queue does not publish', pushed.length === 0,
+        JSON.stringify(pushed[0] || null));
+      check('leave volatile for queue does not call next()', nextCalls.length === 0);
+    }
+
+    {
+      const p = newPlugin({ queue_playback: false });
+      p.deviceActive = true;
+      logs.length = 0;
+      p.stop();
+      check('local stop still pauses', pauseCmds().length === 1, logs.join(' | '));
+      check('local stop still yields', logs.indexOf('yield requested') !== -1);
+    }
+
+    {
+      const p = newPlugin({ queue_playback: false });
+      p.deviceActive = false;
+      logs.length = 0;
+      p.stop();
+      check('stop after the session left does not pause',
+        pauseCmds().length === 0, logs.join(' | '));
+    }
+
+    {
+      const p = newPlugin();
+      p.deviceActive = false;
+      p.clearAddPlayTrack({ uri: OURS, service: 'soloist_connect' });
+      logs.length = 0;
+      p.endQueueRow('session left');
+      check('queue row end after transfer does not pause',
+        pauseCmds().length === 0, logs.join(' | '));
+    }
+
+    {
+      const p = newPlugin({ queue_playback: false });
+      p.deviceActive = false;
+      logs.length = 0;
+      p.pause();
+      check('Volumio pause button still sends pause',
+        pauseCmds().length === 1, logs.join(' | '));
+    }
+  }
+
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.3.**
+> **Beta, version 0.8.4.**
 > First beta. Expect remaining rough edges, and see "Things to know" below.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
@@ -61,7 +61,7 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Cache location | Cache | Disk | **Disk** survives a reboot. **RAM** takes writes off a slow SD card, costs that much memory, and is emptied on every reboot and daemon restart. Saving restarts. |
 | Cache size (MB) | Cache | 1024 | `0` means no limit. Other values must be 100 or more. In RAM mode the size is capped to what the board can spare. Saving restarts. |
 | Seek coalesce (ms) | Timing | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. Does not restart. |
-| Inactive hold (ms) | Timing | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin pauses and releases the output. 0 yields immediately. Does not restart. |
+| Inactive hold (ms) | Timing | 2000 | 0 to 10000. How long after Spotify reports the device inactive before the plugin yields the output. 0 yields immediately. Does not restart. |
 | Quality retry wait (ms) | Timing | 300 | 0 to 2000. How long to wait before looking again when the playing cache file is not ready. 0 does not retry. Does not restart. |
 | Quality retries | Timing | 2 | 0 to 10. How many times to look again. 0 does not retry. Does not restart. |
 | Spotify Queue wait (ms) | Timing | 2500 | 0 to 10000. How long the Spotify Queue tile waits for `get_queue`. 0 shows the last event immediately. Does not restart. |
@@ -196,7 +196,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.8.3 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.8.4 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.3.**
+> **Beta, version 0.8.4.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -334,7 +334,7 @@ Four helpers read the lock:
 | `alsaHeldByUs()` / `alsaHeldByOther()` | the two comparisons |
 | `waitUntil(pred, ms)` | polls at 20 ms with a ceiling, resolving either way |
 
-**Yield** happens in `unsetVolatile()`, `stop()`, and `endQueueRow()`. Request the close, pause, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise. `endQueueRow` publishes stop only after the card is free, or immediately if we already released it.
+**Yield** happens in `unsetVolatile()`, `stop()`, and `endQueueRow()`. Request the close, pause only while this speaker still holds the Connect session, then wait until the PCM is no longer ours. Volumio then starts the next service against a free device. Without the wait, MPD reported `Failed to open ALSA device "volumio": Device or resource busy` in the same second the pause was sent, because `clearQueue` does not await the stop promise. After a transfer away, a pause here is account-wide and would stop the phone or desktop that now holds the session, so it is skipped. `unsetVolatile` publishes `pause` while still volatile: core `syncState` applies only play|pause from a volatile service, and `stop` left the last play frame on the player and Peppy. `endQueueRow` still publishes `stop` after the card is free, or immediately if we already released it. That is what `syncState` turns into `next()`.
 
 **Takeover**, in `takeOverPlayback()`, is serialised by `takeoverInFlight`:
 

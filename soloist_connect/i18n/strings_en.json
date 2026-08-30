@@ -46,7 +46,7 @@
   "SEEK_COALESCE_MS": "Seek coalesce (\u33b3)",
   "SEEK_COALESCE_MS_DOC": "Wait this long after the last slider move before sending one seek to Spotify (0-2000). A drag can fire dozens of seeks in a second; each one flushes audio. 0 sends every move. Default 200.",
   "INACTIVE_HOLD_MS": "Inactive hold (\u33b3)",
-  "INACTIVE_HOLD_MS_DOC": "Wait this long after Spotify reports the device inactive before pausing and releasing the output (0-10000). A seek can blink inactive and come back; yielding on that blink ends the Connect session. 0 yields immediately. Default 2000.",
+  "INACTIVE_HOLD_MS_DOC": "Wait this long after Spotify reports the device inactive before yielding the output (0-10000). A seek can blink inactive and come back; yielding on that blink ends the Connect session. After the session has already left this speaker, Spotify is not paused. 0 yields immediately. Default 2000.",
   "QUALITY_RETRY_MS": "Quality retry wait (\u33b3)",
   "QUALITY_RETRY_MS_DOC": "How long to wait before looking again when the playing cache file is not ready (0-2000). 0 does not retry. Default 300.",
   "QUALITY_RETRY_MAX": "Quality retries",
