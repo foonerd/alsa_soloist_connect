@@ -50,6 +50,11 @@ const QUALITY_RETRY_DEFAULT_MS = 300;
 const QUALITY_RETRY_MAX_MS = 2000;
 const QUALITY_RETRY_DEFAULT_COUNT = 2;
 const QUALITY_RETRY_MAX_COUNT = 10;
+// A skip can open a cache file that is still filling. 300 ms × 2 is enough
+// for the fd to appear, not for the download. Watch growth on a 1 s floor
+// until the size stops moving or we land in Lossless.
+const QUALITY_GROWTH_MS_FLOOR = 1000;
+const QUALITY_GROWTH_MAX = 90;
 const SEEK_COALESCE_DEFAULT_MS = 200;
 const SEEK_COALESCE_MAX_MS = 2000;
 const INACTIVE_HOLD_DEFAULT_MS = 2000;
@@ -126,9 +131,14 @@ function SoloistConnect(context) {
   this.quality = '';       // Spotify tier for the current track, '' until known
   this.qualityUri = '';    // track the last measurement was taken against
   this.qualityPath = '';   // cache file that track was reading from
+  this.qualitySize = 0;    // published size; a later growth upgrades the tier
+  this.qualityWatchPath = '';
+  this.qualityWatchSize = 0;
   this.qualityRetryTimer = null;
   this.qualityRetryCount = 0;
   this.qualityRetryUri = '';
+  this.qualityGrowthTimer = null;
+  this.qualityGrowthCount = 0;
   this.pendingYieldAt = 0; // yield in progress; leftover play must not reclaim
   this.takeoverInFlight = false;
   this.lastStateRefreshAt = 0; // throttle for unsolicited get_state requests
@@ -850,7 +860,14 @@ SoloistConnect.prototype.fetchAudioSpec = function () {
 //   two fds, same uri → prefetch, keep the current label
 // A uri change clears the published label so a skip cannot keep the
 // previous track. Empty/stale/ambiguous retries per the operator
-// settings, then stops. A later measurement publishes itself.
+// settings, then stops.
+//
+// The file is not always complete when the fd appears. A skip before
+// prefetch finishes opens a few hundred KB and the size/duration ratio
+// reads as Low; locking that sample is what FFB1655 reported as a
+// quality collapse. Hold the label while the same path is still growing,
+// publish Lossless as soon as the bitrate crosses the floor, and upgrade
+// if a later sample of the same fd is larger.
 
 SoloistConnect.prototype.updateQuality = function (uri, durationMs, isRetry) {
   if (!uri || !durationMs || durationMs <= 0) return;
@@ -867,8 +884,14 @@ SoloistConnect.prototype.updateQuality = function (uri, durationMs, isRetry) {
     return;
   }
 
-  if (this.quality && this.qualityUri === uri && this.qualityPath === picked.file.path) {
+  if (
+    this.quality &&
+    this.qualityUri === uri &&
+    this.qualityPath === picked.file.path &&
+    picked.file.size <= this.qualitySize
+  ) {
     this.clearQualityRetry();
+    this.clearQualityGrowth();
     return;
   }
 
@@ -881,18 +904,44 @@ SoloistConnect.prototype.updateQuality = function (uri, durationMs, isRetry) {
     }
   }
 
+  const lossless = sample === 'Lossless';
+  const stable =
+    this.qualityWatchPath === picked.file.path &&
+    this.qualityWatchSize === picked.file.size;
+  this.qualityWatchPath = picked.file.path;
+  this.qualityWatchSize = picked.file.size;
+
+  if (
+    !this.quality &&
+    !lossless &&
+    !stable &&
+    this.watchQualityGrowth(uri, durationMs)
+  ) {
+    this.logger.info(
+      'SoloistConnect: open ' + picked.file.path + ' ' + picked.file.size +
+        ' bytes over ' + Math.round(durationMs / 1000) + 's = ' + kbps +
+        ' kbps (growing, hold)'
+    );
+    return;
+  }
+
   this.logger.info(
     'SoloistConnect: open ' + picked.file.path + ' ' + picked.file.size +
     ' bytes over ' + Math.round(durationMs / 1000) + 's = ' + kbps +
     ' kbps -> ' + sample
   );
 
+  const changed = this.quality !== sample || this.qualityPath !== picked.file.path;
   this.quality = sample;
   this.qualityUri = uri;
   this.qualityPath = picked.file.path;
+  this.qualitySize = picked.file.size;
   this.clearQualityRetry();
+  if (lossless || !this.watchQualityGrowth(uri, durationMs)) {
+    this.clearQualityGrowth();
+  }
 
-  if (isRetry && this.active && this.owningPlayback() && this.state.uri === uri) {
+  if (changed && this.active && this.owningPlayback() && this.state.uri === uri) {
     this.state.bitdepth = this.quality;
     this.schedulePushState();
   }
@@ -979,11 +1028,36 @@ SoloistConnect.prototype.clearQualityRetry = function () {
   this.qualityRetryUri = '';
 };
 
+SoloistConnect.prototype.watchQualityGrowth = function (uri, durationMs) {
+  const delay = this.qualityRetryMs();
+  if (delay <= 0) return false;
+  if (this.qualityGrowthCount >= QUALITY_GROWTH_MAX) return false;
+  if (this.qualityGrowthTimer) return true;
+  this.qualityGrowthCount += 1;
+  this.qualityGrowthTimer = setTimeout(() => {
+    this.qualityGrowthTimer = null;
+    this.updateQuality(uri, durationMs, true);
+  }, Math.max(delay, QUALITY_GROWTH_MS_FLOOR));
+  return true;
+};
+
+SoloistConnect.prototype.clearQualityGrowth = function () {
+  if (this.qualityGrowthTimer) {
+    clearTimeout(this.qualityGrowthTimer);
+    this.qualityGrowthTimer = null;
+  }
+  this.qualityGrowthCount = 0;
+  this.qualityWatchPath = '';
+  this.qualityWatchSize = 0;
+};
+
 SoloistConnect.prototype.resetQuality = function () {
   this.clearQualityRetry();
+  this.clearQualityGrowth();
   this.quality = '';
   this.qualityUri = '';
   this.qualityPath = '';
+  this.qualitySize = 0;
 };
 
 SoloistConnect.prototype.daemonPid = function () {
@@ -1625,6 +1699,8 @@ SoloistConnect.prototype.applyItem = function (item) {
   this.state.duration = Math.round(meta.durationMs / 1000);
   if (uri && uri !== this.qualityUri) {
     this.quality = '';
+    this.qualitySize = 0;
+    this.clearQualityGrowth();
     if (this.qualityRetryUri !== uri) this.clearQualityRetry();
   }
   this.updateQuality(uri, meta.durationMs);

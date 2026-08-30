@@ -1357,7 +1357,121 @@ async function main() {
       p.volumioDirectSlave(hardware) === 'volumioOutput');
   }
 
-  // 42. identity line reads the shipped package.json and SOURCE.md
+  // 42. quality: hold a growing cache file, publish when it settles or is lossless
+  {
+    const PATH_A = '/data/soloist/cache/cache/aa/aa.file';
+    const PATH_B = '/data/soloist/cache/cache/bb/bb.file';
+    const URI = 'spotify:track:qualityGrowth';
+    const DURATION = 317000;
+
+    function qualityPlugin() {
+      const p = newPlugin({ quality_retry_ms: 300, quality_retry_max: 2 });
+      p.updateQuality = SoloistConnect.prototype.updateQuality;
+      p.watchQualityGrowth = SoloistConnect.prototype.watchQualityGrowth;
+      p.clearQualityGrowth = SoloistConnect.prototype.clearQualityGrowth;
+      p.clearQualityRetry = SoloistConnect.prototype.clearQualityRetry;
+      p.resetQuality = SoloistConnect.prototype.resetQuality;
+      p.holdQualityRetry = SoloistConnect.prototype.holdQualityRetry;
+      p.pickCacheFile = SoloistConnect.prototype.pickCacheFile;
+      p.qualityRetryMs = SoloistConnect.prototype.qualityRetryMs;
+      p.qualityRetryMax = SoloistConnect.prototype.qualityRetryMax;
+      p.owningPlayback = function () { return false; };
+      p.daemonPid = function () { return 1; };
+      p.cacheFiles = [];
+      p.listCacheFiles = function () { return this.cacheFiles.slice(); };
+      return p;
+    }
+
+    function stopWatch(p) {
+      if (p.qualityGrowthTimer) {
+        clearTimeout(p.qualityGrowthTimer);
+        p.qualityGrowthTimer = null;
+      }
+      if (p.qualityRetryTimer) {
+        clearTimeout(p.qualityRetryTimer);
+        p.qualityRetryTimer = null;
+      }
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [{ path: PATH_A, size: 802816 }];
+      p.updateQuality(URI, DURATION);
+      check('growing first sample is not published', p.quality === '', p.quality);
+      check('growing first sample schedules a watch', p.qualityGrowthTimer !== null);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [{ path: PATH_A, size: 802816 }];
+      p.updateQuality(URI, DURATION);
+      stopWatch(p);
+      p.updateQuality(URI, DURATION);
+      check('stable partial publishes Low', p.quality === 'Low', p.quality);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [{ path: PATH_A, size: 18898196 }];
+      p.updateQuality(URI, DURATION);
+      check('complete lossless publishes immediately', p.quality === 'Lossless', p.quality);
+      check('complete lossless does not keep watching', p.qualityGrowthTimer === null);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [{ path: PATH_A, size: 802816 }];
+      p.updateQuality(URI, DURATION);
+      stopWatch(p);
+      p.cacheFiles = [{ path: PATH_A, size: 18898196 }];
+      p.updateQuality(URI, DURATION);
+      check('growth to lossless publishes without a stable pair', p.quality === 'Lossless', p.quality);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [{ path: PATH_A, size: 802816 }];
+      p.updateQuality(URI, DURATION);
+      stopWatch(p);
+      p.updateQuality(URI, DURATION);
+      check('FFB1655 first lock was Low', p.quality === 'Low', p.quality);
+      p.cacheFiles = [{ path: PATH_A, size: 18898196 }];
+      p.updateQuality(URI, DURATION);
+      check('same fd growing upgrades Low to Lossless', p.quality === 'Lossless', p.quality);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.qualityPath = PATH_A;
+      p.qualityUri = 'spotify:track:previous';
+      p.quality = 'Lossless';
+      p.cacheFiles = [{ path: PATH_A, size: 802816 }];
+      p.updateQuality(URI, DURATION);
+      check('stale previous fd is not measured against the new duration', p.quality === 'Lossless', p.quality);
+      stopWatch(p);
+    }
+
+    {
+      const p = qualityPlugin();
+      p.cacheFiles = [
+        { path: PATH_A, size: 18898196 },
+        { path: PATH_B, size: 409600 },
+      ];
+      p.qualityUri = URI;
+      p.quality = 'Lossless';
+      p.qualityPath = PATH_A;
+      p.updateQuality(URI, DURATION);
+      check('prefetch second fd keeps the current label', p.quality === 'Lossless', p.quality);
+      stopWatch(p);
+    }
+  }
+
+  // 43. identity line reads the shipped package.json and SOURCE.md
   {
     const fs = require('fs');
     const path = require('path');

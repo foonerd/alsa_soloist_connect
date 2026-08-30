@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.2.**
+> **Beta, version 0.8.3.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -425,7 +425,7 @@ Nothing in Soloist reports it. The WebSocket schema is fully documented and `pla
 
 Bit depth is no guide either. Soloist decodes every quality into `FLOAT_LE`, and `/proc/asound` shows the endpoint after `pcm.softvolume` converts, so that field read `24 bit` for lossy and lossless alike. It carries the tier instead, which is what the user actually chose, and it lands where Volumio already shows quality beside the sample rate. The stock Spotify plugin does the same thing with its configured bitrate string.
 
-The measurement is the cache. Soloist writes one content-addressed file per track and it is already complete when playback starts: sampled every two seconds over ten, the size did not move. Size against `duration_ms` is therefore the exact average bitrate.
+The measurement is the cache. Soloist writes one content-addressed file per track. A prefetched track is already complete when playback starts, and size against `duration_ms` is then the exact average bitrate. A skip before that prefetch finishes opens a file that is still filling: a few hundred KB over the track duration reads as Low. The plugin holds the label while that same fd is growing, publishes Lossless as soon as the bitrate crosses the floor, and upgrades if a later sample of the same file is larger. Disable/enable looking like it "restores lossless" is that remasurement after the file has finished, not Soloist changing codec.
 
 **The file is identified by open descriptor, not by mtime.** Soloist holds the playing track's file open under `/proc/<pid>/fd`, and it follows every skip within a second. Audio payloads are under `cache/cache/`; the LevelDB metadata store is under `data/cache/` and must not match.
 
