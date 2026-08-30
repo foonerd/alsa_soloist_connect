@@ -1,7 +1,7 @@
 // Queue-mode regression check for soloist_connect.
 //
-// Runs the queue-mode paths against the event payloads captured from hanger on
-// 2026-08-24. No daemon, no ALSA, no Volumio: the WebSocket send, the ALSA
+// Runs the queue-mode paths against captured event payloads.
+// No daemon, no ALSA, no Volumio: the WebSocket send, the ALSA
 // yield and the core state machine are stubbed, so this only asserts the
 // decisions this plugin makes, which is exactly the part that is not visible
 // from a listening test.
@@ -560,7 +560,7 @@ async function main() {
   {
     const p = newPlugin();
     const stored = {
-      api_key: 'k', device_name: 'hanger', initial_volume: 35,
+      api_key: 'k', device_name: 'Test', initial_volume: 35,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 300,
       output_trim_db: 4, verbose_logging: true,
       retain_api_key: true, queue_playback: false, queue_remote_playback: false,
@@ -590,7 +590,7 @@ async function main() {
   //
   // play is routed to whichever device holds the session. Sending one while the
   // session is elsewhere starts audio on that device, and the later skip does
-  // not take it back: on hanger the track played on the other device anyway.
+  // not take it back: the track played on the other device anyway.
   {
     const off = newPlugin({ queue_playback: true, queue_remote_playback: false });
     armQueue(off, OURS);
@@ -1105,10 +1105,10 @@ async function main() {
 
   // 40. convert playlist rewrites only spop track rows
   //
-  // hanger /data/playlist/Test is already soloist_connect + mpd. That shape
+  // A saved list that is already soloist_connect + mpd. That shape
   // is the write target. The stock plugin's lists still say spop.
   {
-    const hangerTest = [
+    const convertedList = [
       {
         album: 'The Papercut Chronicles II',
         albumart: 'https://i.scdn.co/image/ab67616d0000b27318b8088fe0c3dbf78398b55a',
@@ -1143,10 +1143,10 @@ async function main() {
       },
     ];
     const spopMixed = [
-      Object.assign({}, hangerTest[0], { service: 'spop' }),
-      hangerTest[1],
-      Object.assign({}, hangerTest[2], { service: 'spop' }),
-      hangerTest[3],
+      Object.assign({}, convertedList[0], { service: 'spop' }),
+      convertedList[1],
+      Object.assign({}, convertedList[2], { service: 'spop' }),
+      convertedList[3],
       {
         album: '',
         albumart: '',
@@ -1158,10 +1158,10 @@ async function main() {
     ];
 
     const p = newPlugin();
-    const already = p.convertPlaylistRows(hangerTest);
+    const already = p.convertPlaylistRows(convertedList);
     check('already converted list changes nothing', already.converted === 0);
     check('already converted list keeps rows',
-      already.rows[0] === hangerTest[0] && already.rows[1] === hangerTest[1]);
+      already.rows[0] === convertedList[0] && already.rows[1] === convertedList[1]);
 
     const out = p.convertPlaylistRows(spopMixed);
     check('spop tracks are counted', out.converted === 2 && out.total === 5);
@@ -1188,7 +1188,7 @@ async function main() {
     check('posted select object is the value',
       p.postedPlaylistName({ value: 'Test', label: 'Test (2 Spotify rows)' }) === 'Test');
 
-    const store = { Test: hangerTest, Old: JSON.parse(JSON.stringify(spopMixed)) };
+    const store = { Test: convertedList, Old: JSON.parse(JSON.stringify(spopMixed)) };
     function stubLists(plugin) {
       plugin.commandRouter.playListManager = {
         playlistFolder: '/data/playlist/',
@@ -1218,7 +1218,7 @@ async function main() {
       Object.prototype.hasOwnProperty.call(store, 'Old (Soloist)'));
     check('clone leaves the source file',
       store.Old[0].service === 'spop');
-    check('clone dest is hanger shape',
+    check('clone dest matches source shape',
       store['Old (Soloist)'][0].service === 'soloist_connect' &&
       store['Old (Soloist)'][1].service === 'mpd');
     check('clone toast names the dest',
@@ -1326,7 +1326,7 @@ async function main() {
       'pcm.volumio {\n    type             empty\n    slave.pcm       "softvolume"\n}\n' +
       'pcm.softvolume {\n    type            plug\n    slave {\n        pcm         "volumioSoftVol"\n' +
       '        format      "S24_3LE"\n    }\n}\n';
-    const hangerSwitcher =
+    const switcherConf =
       'pcm.volumio {\n    type             empty\n    slave.pcm       "volumioMultiRoomServer"\n}\n' +
       'pcm.softvolume {\n    type            plug\n}\n' +
       'pcm.spotify {\n  type plug\n}\n';
@@ -1342,9 +1342,9 @@ async function main() {
       p.resolvePlaybackDevice(maroenSoftware + 'pcm.spotify {\n  type plug\n}\n', true) ===
         'plug:spotify');
     check('switcher stays on plug:volumio',
-      p.resolvePlaybackDevice(hangerSwitcher, false) === 'plug:volumio');
+      p.resolvePlaybackDevice(switcherConf, false) === 'plug:volumio');
     check('Peppy + switcher opens plug:spotify',
-      p.resolvePlaybackDevice(hangerSwitcher, true) === 'plug:spotify');
+      p.resolvePlaybackDevice(switcherConf, true) === 'plug:spotify');
     check('Hardware stays on plug:volumio',
       p.resolvePlaybackDevice(hardware, false) === 'plug:volumio');
     check('volumioLocalPlayback slave is not pcm.volumio',
@@ -1353,7 +1353,7 @@ async function main() {
       p.resolvePlaybackDevice('', false) === 'plug:volumio');
     check('slave name is empty → softvolume only',
       p.volumioDirectSlave(maroenSoftware) === 'softvolume' &&
-      p.volumioDirectSlave(hangerSwitcher) === 'volumioMultiRoomServer' &&
+      p.volumioDirectSlave(switcherConf) === 'volumioMultiRoomServer' &&
       p.volumioDirectSlave(hardware) === 'volumioOutput');
   }
 
@@ -1438,7 +1438,7 @@ async function main() {
       p.updateQuality(URI, DURATION);
       stopWatch(p);
       p.updateQuality(URI, DURATION);
-      check('FFB1655 first lock was Low', p.quality === 'Low', p.quality);
+      check('partial first lock was Low', p.quality === 'Low', p.quality);
       p.cacheFiles = [{ path: PATH_A, size: 18898196 }];
       p.updateQuality(URI, DURATION);
       check('same fd growing upgrades Low to Lossless', p.quality === 'Lossless', p.quality);

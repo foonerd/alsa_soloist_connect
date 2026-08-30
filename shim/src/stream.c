@@ -1015,8 +1015,8 @@ flush_run(pa_operation *op)
     stream_clock_reset(s);
     /*
      * Ring only. snd_pcm_drop/prepare on a "healthy" Motivo MultiRoom
-     * handle still kills volumioOutput (PslWqYp: second seek → stopped
-     * → logged out). Committed ALSA audio plays out to the buffer bound.
+     * handle still kills volumioOutput on a second seek. Committed
+     * ALSA audio plays out to the buffer bound.
      */
     if (s->pcm) {
         av = snd_pcm_avail(s->pcm);

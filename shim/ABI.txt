@@ -1,7 +1,7 @@
 Soloist Pulse client ABI
 ========================
 
-Soloist 1.3.7 (CDN x86_64 1.3.7.474; hanger 1.3.7.472) does not DT_NEEDED
+Soloist 1.3.7 (CDN x86_64 1.3.7.474; also 1.3.7.472) does not DT_NEEDED
 libpulse. It dlopens libpulse.so.0 and looks up these names. That list is
 the spec. libpulse-simple and libpulse-mainloop-glib are not used.
 

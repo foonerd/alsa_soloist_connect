@@ -46,7 +46,7 @@ Output is installed into `soloist_connect/alsa-lib/<arch>/`.
   the PCM we opened. `/proc/asound` is not scanned for some other card.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole
   buffer. Soloist always writes 32 KiB and will not uncork if that call
-  fails, so rejecting a short write deadlocks preroll (0.2.1 on hanger).
+  fails, so rejecting a short write deadlocks preroll (0.2.1).
   The ring is `tlength` plus 64 KiB so a default 500 ms cap does not
   drop the tail of that write (0.2.4 on Rivo/Integro).
 - Two seconds after load, and on the first `pa_*` call, `--api-key` on

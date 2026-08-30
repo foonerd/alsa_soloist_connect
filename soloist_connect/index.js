@@ -549,7 +549,7 @@ SoloistConnect.prototype.writeEnvFile = function () {
 };
 
 // pcm.volumio's slave.pcm only. Does not walk nested slave { } blocks.
-// hanger / 3B+ / Hardware: volumioMultiRoomServer or volumioOutput.
+// Hardware mixer: volumioMultiRoomServer or volumioOutput.
 // Software mixer with nothing above SoftMaster: softvolume.
 SoloistConnect.prototype.volumioDirectSlave = function (conf) {
   const text = String(conf || '');
@@ -864,8 +864,8 @@ SoloistConnect.prototype.fetchAudioSpec = function () {
 //
 // The file is not always complete when the fd appears. A skip before
 // prefetch finishes opens a few hundred KB and the size/duration ratio
-// reads as Low; locking that sample is what FFB1655 reported as a
-// quality collapse. Hold the label while the same path is still growing,
+// reads as Low; locking that sample looks like a quality collapse.
+// Hold the label while the same path is still growing,
 // publish Lossless as soon as the bitrate crosses the floor, and upgrade
 // if a later sample of the same fd is larger.
 
@@ -1183,7 +1183,7 @@ SoloistConnect.prototype.queueFetchMs = function () {
 // Bluetooth SIGKILLs bluealsa-aplay; we cannot kill Soloist. Takeover
 // stops whoever else holds the device and claims volatile. It must not
 // yield: first play has already opened pcm.volumio (Peppyalsa 16384 vs
-// our 22050). Yielding then reopening is what failed avail() on hanger.
+// our 22050). Yielding then reopening is what failed avail().
 //
 // `active` is Spotify Connect device status. It is not cleared on yield:
 // clearing it made the next is_active=true look like a new selection and
@@ -1488,7 +1488,7 @@ SoloistConnect.prototype.handleEvent = function (msg) {
           this.logVerbose('hold publish: playback_state buffering same uri ' +
             prevUri);
         } else if (!incomingUri) {
-          // Idle + empty item is a seek blink (PslWqYp 11:07:57). applyItem
+          // Idle + empty item is a seek blink. applyItem
           // on uri="" published play with no title; Soloist was still active.
           this.logVerbose('hold publish: playback_state empty item uri=' +
             (this.state.uri || ''));
@@ -2071,7 +2071,7 @@ SoloistConnect.prototype.unsetVolatile = function () {
 //                  CoreStateMachine::next only calls the plugin while
 //                  isVolatile.
 //
-// Measured on hanger, 2026-08-24, and the reason this works at all:
+// Measured, and the reason this works at all:
 //
 //   - play with a uri needs only a stored session. The Spotify app does not
 //     have to be open, and is_active is true for a play we issue ourselves.
