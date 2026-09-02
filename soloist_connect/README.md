@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.4.**
+> **Beta, version 0.8.5.**
 > First beta. Expect remaining rough edges, and see "Things to know" below.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
@@ -42,7 +42,7 @@ It belongs to the account that generated it and must not be shared.
 
 ## Settings
 
-The page is split by what a save does. **Save & Restart Soloist** is for Spotify identity, sound, cache and diagnostics: those values are read by the daemon, so playback stops and comes back. **Save** is for the Volumio queue switches and the timing fields: this process reads them on the next row or the next event, and Soloist keeps playing. **Convert playlist** rewrites a saved Volumio list and does not restart.
+The page is split by what a save does. **Save & Restart Soloist** is for Spotify identity, sound, cache and diagnostics: those values are read by the daemon, so playback stops and comes back. **Save** is for the Volumio queue switches and the timing fields: this process reads them on the next row or the next event, and Soloist keeps playing. **Convert playlist** rewrites a saved Volumio list and does not restart. **Backup settings** writes a named snapshot on this device; restore runs the same checks as Save.
 
 | Setting | Section | Default | Notes |
 |---|---|---|---|
@@ -66,6 +66,9 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Quality retries | Timing | 2 | 0 to 10. How many times to look again. 0 does not retry. Does not restart. |
 | Spotify Queue wait (ms) | Timing | 2500 | 0 to 10000. How long the Spotify Queue tile waits for `get_queue`. 0 shows the last event immediately. Does not restart. |
 | Verbose logging | Diagnostics | off | Logs every event Spotify sends the device, and turns on the audio shim's own diagnostics. Saving restarts so the shim picks it up. |
+| Backup name | Backup settings | — | Named snapshot of the stored settings under `/data/INTERNAL/soloist_connect/backups`. The API key is included only when Retain my API key is on. This is not a clone of the Spotify login. The restore list updates on this page. |
+| Backup | Restore settings | — | Applies through the same checks as Save. A backup without a key keeps the key already on this box. Restore of Spotify identity, sound, cache or diagnostics restarts Soloist. |
+| Backup | Delete settings backup | — | Removes the named file. Live settings are not changed. |
 
 The page also has an **update** button, which fetches a fresh Soloist build from Spotify. A progress modal stays up while it downloads. On success a 15 second reboot countdown appears, with Restart and Cancel. A failed download leaves the running binary alone.
 
@@ -177,6 +180,9 @@ That is what it is: memory, not storage. Saving Spotify, Sound, Cache or Diagnos
 **The Spotify Queue tile is this speaker's Connect list.**
 It appears on Browse only when **Play Spotify tracks from the Volumio queue** is on and Soloist is connected. Now playing, play next, up next, autoplay and recently played come from `get_queue` and stay in those sections. While the tile is open, a track change or `queue_changed` refreshes the page (a full `get_queue`, because the unsolicited event is capped at 10). That is not Volumio's mixed playlist, and there is no Spotify library browse or search.
 
+**A settings backup is not a clone of the Spotify login.**
+It is the stored plugin settings on this device. The API key is written into the file only when **Retain my API key** is on. Restore without a key keeps the key already on this box. The paired session under `/data/soloist/data` is left alone.
+
 ---
 
 ## Troubleshooting
@@ -196,7 +202,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.8.4 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.8.5 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

@@ -17,6 +17,29 @@ const YIELD_PATH = '/data/soloist/alsa.yield';
 // status=stop drops volatileService, re-pushes the last play frame, then
 // skips us against the leftover queue row. Set to 'stop' to undo this step.
 const CONNECT_LEAVE_STATUS = 'pause';
+const SETTINGS_BACKUP_DIR = '/data/INTERNAL/soloist_connect/backups';
+const SETTINGS_BACKUP_SCHEMA = 1;
+const SETTINGS_BACKUP_NAME_RE = /^[A-Za-z0-9._ -]{1,64}$/;
+// Stored settings only. peppy_metering is Peppy's, not this page.
+// api_key is added only when retain_api_key is on.
+const SETTINGS_BACKUP_KEYS = [
+  'device_name',
+  'retain_api_key',
+  'initial_volume',
+  'align_volume',
+  'output_trim_db',
+  'buffer_ms',
+  'cache_location',
+  'cache_size_mb',
+  'seek_coalesce_ms',
+  'inactive_hold_ms',
+  'quality_retry_ms',
+  'quality_retry_max',
+  'queue_fetch_ms',
+  'queue_playback',
+  'queue_remote_playback',
+  'verbose_logging',
+];
 
 // RAM cache ceiling, as a fraction of MemTotal.
 //
@@ -3266,6 +3289,24 @@ SoloistConnect.prototype.volume = function (data) {
 // UI configuration
 // ---------------------------------------------------------------------------
 
+// Peppy and Now Playing do this after a backup write: rebuild the page and
+// push it to the open settings tab so the restore list updates without leaving.
+SoloistConnect.prototype.updateUIConfig = function () {
+  const self = this;
+  if (typeof this.commandRouter.getUIConfigOnPlugin !== 'function') {
+    return libQ.resolve();
+  }
+  return this.commandRouter
+    .getUIConfigOnPlugin('music_service', 'soloist_connect', {})
+    .then((uiconf) => {
+      self.commandRouter.broadcastMessage('pushUiConfig', uiconf);
+    })
+    .fail((e) => {
+      self.logger.error('SoloistConnect: pushUiConfig failed: ' + e);
+      return libQ.resolve();
+    });
+};
+
 SoloistConnect.prototype.getUIConfig = function () {
   const defer = libQ.defer();
   const self = this;
@@ -3340,6 +3381,20 @@ SoloistConnect.prototype.getUIConfig = function () {
               ? { value: options[0].value, label: options[0].label }
               : { value: none.value, label: none.label };
           }
+          const backupNone = {
+            value: '',
+            label: 'No settings backups yet',
+          };
+          const backups = self.listSettingsBackups();
+          ['selected_backup', 'selected_backup_delete'].forEach((id) => {
+            const backupEl = findEl(id);
+            if (!backupEl) return;
+            const none = (backupEl.options && backupEl.options[0]) || backupNone;
+            backupEl.options = backups.length ? backups : [none];
+            backupEl.value = backups.length
+              ? { value: backups[0].value, label: backups[0].label }
+              : { value: none.value, label: none.label };
+          });
           self.warnIfSpopStarted();
           defer.resolve(uiconf);
         })
@@ -3551,36 +3606,28 @@ SoloistConnect.prototype.daemonSettingsChanged = function (values) {
   return false;
 };
 
-SoloistConnect.prototype.saveSoloistSettings = function (data) {
+SoloistConnect.prototype.applyValidatedSettings = function (values, opts) {
+  opts = opts || {};
   const self = this;
+  const restartNeeded = this.daemonSettingsChanged(values);
 
-  const result = this.validateSettings(data);
-  if (!result.ok) {
-    this.logger.error('SoloistConnect: rejected settings: ' + result.message);
-    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', result.message);
-    return libQ.resolve();
-  }
-
-  // Read before writing: the comparison is against what is stored now.
-  const restartNeeded = this.daemonSettingsChanged(result.values);
-
-  this.config.set('api_key', result.values.api_key);
-  this.config.set('device_name', result.values.device_name);
-  this.config.set('initial_volume', result.values.initial_volume);
-  this.config.set('align_volume', result.values.align_volume);
-  this.config.set('cache_size_mb', result.values.cache_size_mb);
-  this.config.set('cache_location', result.values.cache_location);
-  this.config.set('buffer_ms', result.values.buffer_ms);
-  this.config.set('seek_coalesce_ms', result.values.seek_coalesce_ms);
-  this.config.set('inactive_hold_ms', result.values.inactive_hold_ms);
-  this.config.set('quality_retry_ms', result.values.quality_retry_ms);
-  this.config.set('quality_retry_max', result.values.quality_retry_max);
-  this.config.set('queue_fetch_ms', result.values.queue_fetch_ms);
-  this.config.set('output_trim_db', result.values.output_trim_db);
-  this.config.set('retain_api_key', result.values.retain_api_key);
-  this.config.set('queue_playback', result.values.queue_playback);
-  this.config.set('queue_remote_playback', result.values.queue_remote_playback);
-  this.config.set('verbose_logging', result.values.verbose_logging);
+  this.config.set('api_key', values.api_key);
+  this.config.set('device_name', values.device_name);
+  this.config.set('initial_volume', values.initial_volume);
+  this.config.set('align_volume', values.align_volume);
+  this.config.set('cache_size_mb', values.cache_size_mb);
+  this.config.set('cache_location', values.cache_location);
+  this.config.set('buffer_ms', values.buffer_ms);
+  this.config.set('seek_coalesce_ms', values.seek_coalesce_ms);
+  this.config.set('inactive_hold_ms', values.inactive_hold_ms);
+  this.config.set('quality_retry_ms', values.quality_retry_ms);
+  this.config.set('quality_retry_max', values.quality_retry_max);
+  this.config.set('queue_fetch_ms', values.queue_fetch_ms);
+  this.config.set('output_trim_db', values.output_trim_db);
+  this.config.set('retain_api_key', values.retain_api_key);
+  this.config.set('queue_playback', values.queue_playback);
+  this.config.set('queue_remote_playback', values.queue_remote_playback);
+  this.config.set('verbose_logging', values.verbose_logging);
   this.clearPendingSeek();
   this.syncBrowseSource();
 
@@ -3588,9 +3635,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   // MemTotal in RAM mode, and RAM mode is refused outright on a board too small
   // to carry the daemon's own 100 MB floor. Either would otherwise be a setting
   // that appears to have been accepted and did something different.
-  const cachePosted =
-    data.cache_location !== undefined || data.cache_size_mb !== undefined;
-  if (cachePosted && result.values.cache_location === 'ram') {
+  if (opts.cachePosted && values.cache_location === 'ram') {
     const ramMb = this.ramCacheSizeMb();
     if (!ramMb) {
       this.commandRouter.pushToastMessage(
@@ -3598,7 +3643,7 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
         'Spotify Soloist',
         'This board does not have enough memory for a RAM cache. Staying on disk.'
       );
-    } else if (ramMb < result.values.cache_size_mb) {
+    } else if (ramMb < values.cache_size_mb) {
       this.commandRouter.pushToastMessage(
         'info',
         'Spotify Soloist',
@@ -3610,18 +3655,196 @@ SoloistConnect.prototype.saveSoloistSettings = function (data) {
   // Restarting the daemon stops whatever is playing. Do it only when the
   // daemon is actually reading something that changed; the queue switches are
   // read by this process on the next track.
+  const savedToast = opts.savedToast || 'Settings saved.';
+  const restartToast = opts.restartToast || 'Settings saved. Restarting Soloist...';
   if (!restartNeeded) {
-    this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved.');
+    this.commandRouter.pushToastMessage('success', 'Spotify Soloist', savedToast);
     return libQ.resolve();
   }
 
-  this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings saved. Restarting Soloist...');
+  this.commandRouter.pushToastMessage('success', 'Spotify Soloist', restartToast);
   return this.startDaemon()
     .then(() => self.connectWebSocket())
     .fail((e) => {
       self.logger.error('SoloistConnect: save/restart failed: ' + e);
       return libQ.resolve(); // keep UI responsive; error already toasted
     });
+};
+
+SoloistConnect.prototype.saveSoloistSettings = function (data) {
+  const result = this.validateSettings(data);
+  if (!result.ok) {
+    this.logger.error('SoloistConnect: rejected settings: ' + result.message);
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', result.message);
+    return libQ.resolve();
+  }
+
+  return this.applyValidatedSettings(result.values, {
+    cachePosted: data.cache_location !== undefined || data.cache_size_mb !== undefined,
+  });
+};
+
+SoloistConnect.prototype.settingsBackupDir = function () {
+  return this._settingsBackupDir || SETTINGS_BACKUP_DIR;
+};
+
+SoloistConnect.prototype.sanitizeBackupName = function (raw) {
+  const name = String(raw == null ? '' : raw).trim();
+  if (!name || name.indexOf('..') !== -1 || /[\\/]/.test(name)) return '';
+  if (!SETTINGS_BACKUP_NAME_RE.test(name)) return '';
+  return name;
+};
+
+SoloistConnect.prototype.postedSelectValue = function (raw) {
+  if (raw && typeof raw === 'object') return raw.value;
+  return raw;
+};
+
+SoloistConnect.prototype.settingsBackupPath = function (name) {
+  return path.join(this.settingsBackupDir(), name + '.json');
+};
+
+SoloistConnect.prototype.ensureSettingsBackupDir = function () {
+  const dir = this.settingsBackupDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch (e) {
+    /* mode may be refused on some filesystems; create still happened */
+  }
+  return dir;
+};
+
+SoloistConnect.prototype.settingsBackupSnapshot = function () {
+  const retain = this.config.get('retain_api_key') === true;
+  const values = {};
+  for (let i = 0; i < SETTINGS_BACKUP_KEYS.length; i++) {
+    const key = SETTINGS_BACKUP_KEYS[i];
+    values[key] = this.config.get(key);
+  }
+  if (retain) values.api_key = this.config.get('api_key') || '';
+  return {
+    schema_version: SETTINGS_BACKUP_SCHEMA,
+    plugin_version: this.pluginVersion(),
+    created: new Date().toISOString(),
+    values: values,
+  };
+};
+
+SoloistConnect.prototype.readSettingsBackup = function (name) {
+  const safe = this.sanitizeBackupName(name);
+  if (!safe) return { ok: false, message: 'Choose a settings backup.' };
+  let raw;
+  try {
+    raw = fs.readFileSync(this.settingsBackupPath(safe), 'utf8');
+  } catch (e) {
+    return { ok: false, message: 'That settings backup is not on this device.' };
+  }
+  let snap;
+  try {
+    snap = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, message: 'That settings backup is not valid JSON.' };
+  }
+  if (!snap || snap.schema_version !== SETTINGS_BACKUP_SCHEMA ||
+      !snap.values || typeof snap.values !== 'object') {
+    return { ok: false, message: 'That settings backup is not a schema 1 snapshot.' };
+  }
+  return { ok: true, name: safe, snapshot: snap };
+};
+
+SoloistConnect.prototype.listSettingsBackups = function () {
+  let names;
+  try {
+    names = fs.readdirSync(this.settingsBackupDir());
+  } catch (e) {
+    return [];
+  }
+  const options = [];
+  for (let i = 0; i < names.length; i++) {
+    const file = names[i];
+    if (!file.endsWith('.json')) continue;
+    const name = file.slice(0, -5);
+    if (!this.sanitizeBackupName(name)) continue;
+    const read = this.readSettingsBackup(name);
+    if (!read.ok) continue;
+    options.push({ value: name, label: name });
+  }
+  options.sort((a, b) => a.value.localeCompare(b.value));
+  return options;
+};
+
+SoloistConnect.prototype.createSettingsBackup = function (data) {
+  const name = this.sanitizeBackupName(data && data.backup_name);
+  if (!name) {
+    this.commandRouter.pushToastMessage(
+      'error',
+      'Spotify Soloist',
+      'Backup name must be 1–64 letters, numbers, spaces, dots, underscores or hyphens.'
+    );
+    return libQ.resolve();
+  }
+  try {
+    this.ensureSettingsBackupDir();
+    const snap = this.settingsBackupSnapshot();
+    snap.name = name;
+    const dest = this.settingsBackupPath(name);
+    const hasKey = Object.prototype.hasOwnProperty.call(snap.values, 'api_key');
+    fs.writeFileSync(dest, JSON.stringify(snap, null, 2) + '\n', { mode: 0o600 });
+    try {
+      fs.chmodSync(dest, hasKey ? 0o600 : 0o640);
+    } catch (e) {
+      /* mode best-effort */
+    }
+  } catch (e) {
+    this.logger.error('SoloistConnect: settings backup failed: ' + e);
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', 'Could not write the settings backup.');
+    return libQ.resolve();
+  }
+  this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings backup saved.');
+  return this.updateUIConfig();
+};
+
+SoloistConnect.prototype.restoreSettingsBackup = function (data) {
+  const name = this.postedSelectValue(data && data.selected_backup);
+  const read = this.readSettingsBackup(name);
+  if (!read.ok) {
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', read.message);
+    return libQ.resolve();
+  }
+  const result = this.validateSettings(read.snapshot.values);
+  if (!result.ok) {
+    this.logger.error('SoloistConnect: rejected settings backup: ' + result.message);
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', result.message);
+    return libQ.resolve();
+  }
+  const values = read.snapshot.values;
+  const self = this;
+  return this.applyValidatedSettings(result.values, {
+    cachePosted: values.cache_location !== undefined || values.cache_size_mb !== undefined,
+    savedToast: 'Settings restored.',
+    restartToast: 'Settings restored. Restarting Soloist...',
+  }).then(() => self.updateUIConfig());
+};
+
+SoloistConnect.prototype.deleteSettingsBackup = function (data) {
+  const name = this.sanitizeBackupName(this.postedSelectValue(data && data.selected_backup_delete));
+  if (!name) {
+    this.commandRouter.pushToastMessage('error', 'Spotify Soloist', 'Choose a settings backup.');
+    return libQ.resolve();
+  }
+  try {
+    fs.unlinkSync(this.settingsBackupPath(name));
+  } catch (e) {
+    this.commandRouter.pushToastMessage(
+      'error',
+      'Spotify Soloist',
+      'That settings backup is not on this device.'
+    );
+    return libQ.resolve();
+  }
+  this.commandRouter.pushToastMessage('success', 'Spotify Soloist', 'Settings backup deleted.');
+  return this.updateUIConfig();
 };
 
 SoloistConnect.prototype.runDownloadScript = function (callback) {

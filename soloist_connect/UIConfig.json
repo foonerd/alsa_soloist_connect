@@ -400,6 +400,106 @@
       ]
     },
     {
+      "id": "soloist_backup_create",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_BACKUP_CREATE",
+      "icon": "fa-save",
+      "description": "TRANSLATE.SECTION_BACKUP_CREATE_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "createSettingsBackup"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.BACKUP_CREATE",
+        "data": [
+          "backup_name"
+        ]
+      },
+      "content": [
+        {
+          "id": "backup_name",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.BACKUP_NAME",
+          "doc": "TRANSLATE.BACKUP_NAME_DOC",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "id": "soloist_backup_restore",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_BACKUP_RESTORE",
+      "icon": "fa-undo",
+      "description": "TRANSLATE.SECTION_BACKUP_RESTORE_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "restoreSettingsBackup"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.BACKUP_RESTORE",
+        "data": [
+          "selected_backup"
+        ]
+      },
+      "content": [
+        {
+          "id": "selected_backup",
+          "element": "select",
+          "label": "TRANSLATE.BACKUP_SELECTED",
+          "doc": "TRANSLATE.BACKUP_SELECTED_DOC",
+          "value": {
+            "value": "",
+            "label": "TRANSLATE.BACKUP_NONE_YET"
+          },
+          "options": [
+            {
+              "value": "",
+              "label": "TRANSLATE.BACKUP_NONE_YET"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "soloist_backup_delete",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_BACKUP_DELETE",
+      "icon": "fa-trash",
+      "description": "TRANSLATE.SECTION_BACKUP_DELETE_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/soloist_connect",
+        "method": "deleteSettingsBackup"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.BACKUP_DELETE",
+        "data": [
+          "selected_backup_delete"
+        ]
+      },
+      "content": [
+        {
+          "id": "selected_backup_delete",
+          "element": "select",
+          "label": "TRANSLATE.BACKUP_SELECTED",
+          "doc": "TRANSLATE.BACKUP_SELECTED_DOC",
+          "value": {
+            "value": "",
+            "label": "TRANSLATE.BACKUP_NONE_YET"
+          },
+          "options": [
+            {
+              "value": "",
+              "label": "TRANSLATE.BACKUP_NONE_YET"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "soloist_update",
       "element": "section",
       "label": "TRANSLATE.UPDATE_SECTION",

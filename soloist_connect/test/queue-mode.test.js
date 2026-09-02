@@ -12,6 +12,10 @@
 
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const libQ = require('kew');
 const SoloistConnect = require('../index.js');
 
 const pushed = [];
@@ -51,6 +55,7 @@ function makeCtx() {
     volumioAddToBrowseSources(data) { browseAdds.push(data); },
     volumioRemoveToBrowseSources(name) { browseRemoves.push(name); },
     broadcastMessage(emit, payload) { browsePushes.push({ emit, payload }); },
+    getUIConfigOnPlugin() { return libQ.resolve({ sections: [] }); },
     pushToastMessage(type, title, msg) { toasts.push({ type, title, msg }); },
     reboot() { logs.push('reboot'); },
     closeModals() { logs.push('closeModals'); },
@@ -90,6 +95,49 @@ function newPlugin(config) {
   p.updateQuality = function () {};
   p.fetchAudioSpec = function () {};
   return p;
+}
+
+function writablePlugin(config, backupDir) {
+  const settings = Object.assign({
+    api_key: 'spak_test',
+    device_name: 'Volumio',
+    retain_api_key: true,
+    initial_volume: 50,
+    align_volume: false,
+    output_trim_db: 0,
+    buffer_ms: 500,
+    cache_location: 'disk',
+    cache_size_mb: 1024,
+    seek_coalesce_ms: 200,
+    inactive_hold_ms: 2000,
+    quality_retry_ms: 300,
+    quality_retry_max: 2,
+    queue_fetch_ms: 2500,
+    queue_playback: false,
+    queue_remote_playback: false,
+    verbose_logging: false,
+    peppy_metering: false,
+  }, config || {});
+  const p = newPlugin(settings);
+  p.config = {
+    get: (key) => settings[key],
+    set: (key, value) => { settings[key] = value; },
+    has: (key) => Object.prototype.hasOwnProperty.call(settings, key),
+  };
+  p._settingsBackupDir = backupDir;
+  p.startDaemon = function () {
+    logs.push('startDaemon');
+    return libQ.resolve();
+  };
+  p.connectWebSocket = function () { logs.push('connectWebSocket'); };
+  p.syncBrowseSource = function () { logs.push('syncBrowseSource'); };
+  p.clearPendingSeek = function () {};
+  p.ramCacheSizeMb = function () { return 0; };
+  return p;
+}
+
+function makeBackupDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-bak-'));
 }
 
 // A queue holding one Spotify row at position 0, which is what
@@ -1597,6 +1645,132 @@ async function main() {
       check('Volumio pause button still sends pause',
         pauseCmds().length === 1, logs.join(' | '));
     }
+  }
+
+  // 45. settings backup: key follows Retain; restore uses validate+apply
+  {
+    const dir = makeBackupDir();
+
+    {
+      const p = writablePlugin({ retain_api_key: true, api_key: 'spak_keep' }, dir);
+      const snap = p.settingsBackupSnapshot();
+      check('retain on includes api_key', snap.values.api_key === 'spak_keep');
+      check('retain on snapshot is schema 1', snap.schema_version === 1);
+      check('snapshot omits peppy_metering',
+        !Object.prototype.hasOwnProperty.call(snap.values, 'peppy_metering'));
+    }
+
+    {
+      const p = writablePlugin({ retain_api_key: false, api_key: 'spak_omit' }, dir);
+      const snap = p.settingsBackupSnapshot();
+      check('retain off omits api_key',
+        !Object.prototype.hasOwnProperty.call(snap.values, 'api_key'));
+    }
+
+    {
+      const p = writablePlugin({
+        retain_api_key: false,
+        api_key: 'spak_live',
+        device_name: 'Hanger',
+        peppy_metering: true,
+      }, dir);
+      toasts.length = 0;
+      browsePushes.length = 0;
+      await p.createSettingsBackup({ backup_name: 'no-key' });
+      check('create no-key backup writes a file',
+        fs.existsSync(path.join(dir, 'no-key.json')));
+      check('create refreshes the open settings page',
+        browsePushes.some((b) => b.emit === 'pushUiConfig'),
+        JSON.stringify(browsePushes));
+      p.config.set('api_key', 'spak_kept');
+      p.config.set('device_name', 'Other');
+      toasts.length = 0;
+      logs.length = 0;
+      p.restoreSettingsBackup({ selected_backup: 'no-key' });
+      check('restore without key keeps live api_key', p.config.get('api_key') === 'spak_kept');
+      check('restore without key applies device_name', p.config.get('device_name') === 'Hanger');
+      check('restore does not write peppy_metering', p.config.get('peppy_metering') === true);
+    }
+
+    {
+      const p = writablePlugin({ peppy_metering: true, device_name: 'Live' }, dir);
+      fs.writeFileSync(path.join(dir, 'with-peppy.json'), JSON.stringify({
+        schema_version: 1,
+        values: {
+          device_name: 'FromBak',
+          retain_api_key: true,
+          peppy_metering: false,
+          initial_volume: 50,
+          align_volume: false,
+          output_trim_db: 0,
+          buffer_ms: 500,
+          cache_location: 'disk',
+          cache_size_mb: 1024,
+          seek_coalesce_ms: 200,
+          inactive_hold_ms: 2000,
+          quality_retry_ms: 300,
+          quality_retry_max: 2,
+          queue_fetch_ms: 2500,
+          queue_playback: false,
+          queue_remote_playback: false,
+          verbose_logging: false,
+        },
+      }));
+      p.restoreSettingsBackup({ selected_backup: 'with-peppy' });
+      check('crafted peppy_metering in backup is ignored',
+        p.config.get('peppy_metering') === true);
+      check('crafted backup still applies device_name',
+        p.config.get('device_name') === 'FromBak');
+    }
+
+    {
+      const p = writablePlugin({}, dir);
+      toasts.length = 0;
+      p.createSettingsBackup({ backup_name: '../etc' });
+      check('bad backup name is rejected',
+        toasts.some((t) => t.type === 'error') &&
+        !fs.existsSync(path.join(dir, '../etc.json')));
+      check('bad backup name does not write under backup dir',
+        fs.readdirSync(dir).indexOf('etc.json') === -1);
+    }
+
+    {
+      const p = writablePlugin({ device_name: 'Unchanged' }, dir);
+      fs.writeFileSync(path.join(dir, 'bad-schema.json'), JSON.stringify({
+        schema_version: 2,
+        values: { device_name: 'Evil' },
+      }));
+      toasts.length = 0;
+      p.restoreSettingsBackup({ selected_backup: 'bad-schema' });
+      check('bad schema is rejected', toasts.some((t) => t.type === 'error'));
+      check('bad schema leaves live config', p.config.get('device_name') === 'Unchanged');
+    }
+
+    {
+      const p = writablePlugin({ buffer_ms: 500, queue_playback: false }, dir);
+      p.createSettingsBackup({ backup_name: 'daemon' });
+      p.config.set('buffer_ms', 400);
+      logs.length = 0;
+      toasts.length = 0;
+      p.restoreSettingsBackup({ selected_backup: { value: 'daemon', label: 'daemon' } });
+      check('restore of daemon fields restarts Soloist',
+        logs.indexOf('startDaemon') !== -1, logs.join(' | '));
+      check('restore of daemon fields applies buffer_ms', p.config.get('buffer_ms') === 500);
+    }
+
+    {
+      const p = writablePlugin({ buffer_ms: 500, queue_playback: false }, dir);
+      p.createSettingsBackup({ backup_name: 'queue-only' });
+      p.config.set('queue_playback', true);
+      logs.length = 0;
+      p.restoreSettingsBackup({ selected_backup: 'queue-only' });
+      check('restore of queue only does not restart',
+        logs.indexOf('startDaemon') === -1, logs.join(' | '));
+      check('restore of queue only applies queue_playback',
+        p.config.get('queue_playback') === false);
+    }
+
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');

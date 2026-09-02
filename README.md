@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.4.**
+> **Beta, version 0.8.5.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -309,7 +309,7 @@ The row ends on buffering within 1.5 s of duration, idle after first audio, `tra
 
 `owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile that is registered only while `queue_playback` is on. An open tile is refreshed from those events (full `get_queue`, because a broadcast `queue_changed` is capped at 10). Soloist's upcoming list is not pushed into Volumio's play queue.
 
-Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value.
+Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value. Named settings backups live under `/data/INTERNAL/soloist_connect/backups` and are applied through that same validate-and-save path. The API key is written into a backup only when Retain my API key is on. The paired Spotify session is not in the snapshot.
 
 The harness is `soloist_connect/test/queue-mode.test.js`.
 
