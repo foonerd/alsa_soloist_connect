@@ -1773,6 +1773,85 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  // 46. account playing is not a local claim
+  {
+    function claimPlugin(config) {
+      const p = newPlugin(Object.assign({ queue_playback: false }, config || {}));
+      p.takeovers = 0;
+      p.takeOverPlayback = function () { this.takeovers++; };
+      return p;
+    }
+
+    {
+      const p = claimPlugin();
+      logs.length = 0;
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      check('account playing does not claim',
+        p.takeovers === 0 && p.state.status === 'pause' && p.deviceActive === false);
+      check('account playing logs the refusal',
+        logs.some((l) => l === 'info SoloistConnect: not claiming: playing while is_active=false'),
+        logs.join(' | '));
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, true));
+      check('this speaker playing still claims',
+        p.takeovers === 1 && p.deviceActive === true && p.state.status === 'play');
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, true));
+      check('later local playing still claims',
+        p.takeovers === 1 && p.deviceActive === true && p.state.status === 'play');
+    }
+
+    {
+      const p = claimPlugin();
+      p.deviceActive = false;
+      p.handleEvent({ type: 'playback_changed', status: 'playing' });
+      check('playback_changed playing while inactive does not claim',
+        p.takeovers === 0 && p.state.status === 'pause');
+    }
+
+    {
+      const p = claimPlugin();
+      p.deviceActive = true;
+      p.pendingYieldAt = Date.now();
+      p.setStatus('playing');
+      check('pendingYieldAt still blocks while this speaker',
+        p.takeovers === 0 && p.state.status === 'pause');
+    }
+
+    {
+      const p = claimPlugin();
+      p.deviceActive = false;
+      p.commandRouter.volumioGetState = function () {
+        return { service: 'soloist_connect' };
+      };
+      p.setStatus('playing');
+      check('already current still claims',
+        p.takeovers === 1 && p.state.status === 'play');
+    }
+
+    {
+      const p = claimPlugin();
+      p.queueMode = true;
+      p.queueUri = OURS;
+      p.deviceActive = false;
+      logs.length = 0;
+      p.setStatus('playing');
+      check('queue mode still does not takeOver', p.takeovers === 0);
+      check('queue mode still clears yield',
+        logs.indexOf('info SoloistConnect: not claiming: playing while is_active=false') === -1 &&
+        logs.indexOf('yield cleared') !== -1,
+        logs.join(' | '));
+      check('queue mode still maps to play', p.state.status === 'play');
+    }
+  }
+
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -1636,6 +1636,12 @@ SoloistConnect.prototype.setStatus = function (soloistStatus) {
       this.syncSeekTimer();
       return;
     }
+    if (!this.queueMode && !this.deviceActive && !this.isCurrentService()) {
+      this.logger.info('SoloistConnect: not claiming: playing while is_active=false');
+      this.state.status = 'pause';
+      this.syncSeekTimer();
+      return;
+    }
     this.pendingYieldAt = 0;
     this.lastPlayTransitionAt = Date.now();
     // The ALSA stream only exists once playback starts. At WebSocket connect

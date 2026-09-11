@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.5.**
+> **Beta, version 0.8.6.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -355,7 +355,7 @@ Two state rules that are not obvious and both came from real failures:
 
 `pendingYieldAt` covers the opposite race. A `play` arriving within 1.5 s of a yield is leftover from the session we just released, not a request, and is treated as a pause.
 
-Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all.
+Takeover fires on the transition into play, not on activation. After the user switches away, Soloist stays the active Connect device, so `is_active` never transitions again; without the play trigger, pressing play in the app produced audio with no Volumio state at all. Account `playing` with `is_active=false` is not a claim: that used to `volumioStop` whoever was current.
 
 The corresponding half is in the shim: the PCM survives cork and uncork. Flush keeps the same handle while it is healthy. After a dead switcher target, flush reopens. The close that yields the device still happens only when the yield file appears.
 
