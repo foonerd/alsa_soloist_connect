@@ -51,6 +51,10 @@
     "type": "number",
     "value": 0
   },
+  "loudness_normalization": {
+    "type": "boolean",
+    "value": true
+  },
   "retain_api_key": {
     "type": "boolean",
     "value": true

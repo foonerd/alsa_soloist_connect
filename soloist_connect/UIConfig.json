@@ -153,6 +153,7 @@
           "initial_volume",
           "align_volume",
           "output_trim_db",
+          "loudness_normalization",
           "buffer_ms"
         ]
       },
@@ -195,6 +196,13 @@
               "max": 12
             }
           ]
+        },
+        {
+          "id": "loudness_normalization",
+          "element": "switch",
+          "label": "TRANSLATE.LOUDNESS_NORMALIZATION",
+          "doc": "TRANSLATE.LOUDNESS_NORMALIZATION_DOC",
+          "value": true
         },
         {
           "id": "buffer_ms",

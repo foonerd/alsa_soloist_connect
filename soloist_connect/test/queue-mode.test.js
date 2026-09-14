@@ -116,6 +116,7 @@ function writablePlugin(config, backupDir) {
     queue_playback: false,
     queue_remote_playback: false,
     verbose_logging: false,
+    loudness_normalization: true,
     peppy_metering: false,
   }, config || {});
   const p = newPlugin(settings);
@@ -584,6 +585,7 @@ async function main() {
       api_key: 'k', device_name: 'Volumio', initial_volume: 50,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 500,
       output_trim_db: 0, verbose_logging: false, align_volume: false,
+      loudness_normalization: true,
       queue_playback: false, queue_remote_playback: false,
     };
     p.config = { get: (key) => stored[key] };
@@ -602,6 +604,10 @@ async function main() {
     check('initial volume change does not restart when align is on',
       p.daemonSettingsChanged(Object.assign({}, stored, { initial_volume: 20 })) === false);
     stored.align_volume = false;
+    check('loudness off restarts',
+      p.daemonSettingsChanged(Object.assign({}, stored, { loudness_normalization: false })) === true);
+    check('loudness unchanged does not restart',
+      p.daemonSettingsChanged(Object.assign({}, stored)) === false);
   }
 
   // 21b. a section save posts only its own fields
@@ -610,7 +616,7 @@ async function main() {
     const stored = {
       api_key: 'k', device_name: 'Test', initial_volume: 35,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 300,
-      output_trim_db: 4, verbose_logging: true,
+      output_trim_db: 4, verbose_logging: true, loudness_normalization: true,
       retain_api_key: true, queue_playback: false, queue_remote_playback: false,
       align_volume: false,
       seek_coalesce_ms: 200, inactive_hold_ms: 2000,
@@ -627,6 +633,7 @@ async function main() {
     check('partial save keeps volume', result.values.initial_volume === 35);
     check('partial save keeps align off', result.values.align_volume === false);
     check('partial save keeps trim', result.values.output_trim_db === 4);
+    check('partial save keeps loudness on', result.values.loudness_normalization === true);
     check('partial save keeps verbose', result.values.verbose_logging === true);
     check('partial save sets queue on', result.values.queue_playback === true);
     check('partial save keeps queue fetch wait', result.values.queue_fetch_ms === 2500);
@@ -1849,6 +1856,90 @@ async function main() {
         logs.indexOf('yield cleared') !== -1,
         logs.join(' | '));
       check('queue mode still maps to play', p.state.status === 'play');
+    }
+  }
+
+  // 47. loudness prefs: merge one engine key on spawn, default on
+  {
+    const { spawnSync } = require('child_process');
+    const helper = path.join(__dirname, '..', 'apply-loudness.sh');
+    function runLoudness(dir, value) {
+      return spawnSync('bash', [helper], {
+        env: Object.assign({}, process.env, {
+          SOLOIST_DATA_DIR: dir,
+          LOUDNESS_NORMALIZATION: value,
+        }),
+        encoding: 'utf8',
+      });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const r = runLoudness(dir, 'false');
+      const global = path.join(dir, 'settings', 'prefs');
+      const text = fs.existsSync(global) ? fs.readFileSync(global, 'utf8') : '';
+      check('helper exits 0', r.status === 0, String(r.status) + ' ' + (r.stderr || ''));
+      check('helper writes global prefs', fs.existsSync(global));
+      check('helper does not create Users',
+        !fs.existsSync(path.join(dir, 'settings', 'Users')));
+      check('helper writes normalize false', text.trim() === 'audio.normalize_v2=false');
+      check('helper writes no crossfade key', text.indexOf('crossfade') === -1);
+      check('helper writes no quality key', text.indexOf('play_bitrate') === -1);
+      check('helper logs off', (r.stderr || '').indexOf('loudness_normalization=off') !== -1,
+        r.stderr);
+      check('helper logs one store', (r.stderr || '').indexOf('stores=1') !== -1, r.stderr);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const global = path.join(dir, 'settings', 'prefs');
+      fs.mkdirSync(path.dirname(global), { recursive: true });
+      fs.writeFileSync(global, 'keep.me=1\naudio.normalize_v2=true\nother=yes\n');
+      const r = runLoudness(dir, 'false');
+      const text = fs.readFileSync(global, 'utf8');
+      check('helper merge exits 0', r.status === 0, String(r.status));
+      check('helper keeps unrelated lines',
+        text.indexOf('keep.me=1') !== -1 && text.indexOf('other=yes') !== -1, text);
+      check('helper replaces normalize once',
+        (text.match(/audio\.normalize_v2=/g) || []).length === 1 &&
+        text.indexOf('audio.normalize_v2=false') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const user = path.join(dir, 'settings', 'Users', 'abc', 'prefs');
+      fs.mkdirSync(path.dirname(user), { recursive: true });
+      fs.writeFileSync(user, 'session=1\n');
+      const r = runLoudness(dir, 'true');
+      const userText = fs.readFileSync(user, 'utf8');
+      check('helper user-store exits 0', r.status === 0, String(r.status));
+      check('helper writes user prefs when present',
+        userText.indexOf('audio.normalize_v2=true') !== -1 &&
+        userText.indexOf('session=1') !== -1, userText);
+      check('helper writes both stores', (r.stderr || '').indexOf('stores=2') !== -1, r.stderr);
+      check('helper does not add a second user dir',
+        fs.readdirSync(path.join(dir, 'settings', 'Users')).join(',') === 'abc');
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const r = runLoudness(dir, 'junk');
+      const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
+      check('helper junk env exits 0', r.status === 0);
+      check('helper junk env writes on', text.indexOf('audio.normalize_v2=true') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = makeBackupDir();
+      const p = writablePlugin({ retain_api_key: false }, dir);
+      const snap = p.settingsBackupSnapshot();
+      check('backup includes loudness_normalization',
+        snap.values.loudness_normalization === true, JSON.stringify(snap.values));
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }
 
