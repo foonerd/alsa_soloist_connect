@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.7.**
+> **Beta, version 0.8.8.**
 > First beta. Expect remaining rough edges, and see "Things to know" below.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
@@ -58,7 +58,8 @@ The page is split by what a save does. **Save & Restart Soloist** is for Spotify
 | Align volume on start | Sound | off | Copy Volumio's volume to Spotify when this speaker becomes the active Connect device, instead of applying Initial Volume. Saving restarts. |
 | Output trim (dB) | Sound | 0 | -12 to +12. A fixed gain on the Spotify stream before it reaches the ALSA chain. Saving restarts. |
 | Loudness normalization | Sound | on | Spotify's own track-to-track matching. Off leaves the original track level. Not Output Trim. Saving restarts. The engine has no official switch; the plugin writes the prefs key at spawn. |
-| Output buffer (ms) | Sound | 500 | 100 to 2000. How much audio is buffered ahead of the DAC. Saving restarts. |
+| Crossfade | Sound | off | Spotify's own fade between consecutive tracks. Off is a hard cut. Not Output buffer. Saving restarts. The engine has no official switch; the plugin writes the prefs keys at spawn. |
+| Crossfade time (ms) | Sound | 2000 | 1000 to 12000. Used only when Crossfade is on. Below 1000 does nothing. Saving restarts. |
 | Cache location | Cache | Disk | **Disk** survives a reboot. **RAM** takes writes off a slow SD card, costs that much memory, and is emptied on every reboot and daemon restart. Saving restarts. |
 | Cache size (MB) | Cache | 1024 | `0` means no limit. Other values must be 100 or more. In RAM mode the size is capped to what the board can spare. Saving restarts. |
 | Seek coalesce (ms) | Timing | 200 | 0 to 2000. How long after the last slider move before one seek is sent. 0 sends every move. Does not restart. |
@@ -203,7 +204,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.8.7 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.8.8 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

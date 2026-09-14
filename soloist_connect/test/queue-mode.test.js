@@ -117,6 +117,8 @@ function writablePlugin(config, backupDir) {
     queue_remote_playback: false,
     verbose_logging: false,
     loudness_normalization: true,
+    crossfade: false,
+    crossfade_ms: 2000,
     peppy_metering: false,
   }, config || {});
   const p = newPlugin(settings);
@@ -585,7 +587,7 @@ async function main() {
       api_key: 'k', device_name: 'Volumio', initial_volume: 50,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 500,
       output_trim_db: 0, verbose_logging: false, align_volume: false,
-      loudness_normalization: true,
+      loudness_normalization: true, crossfade: false, crossfade_ms: 2000,
       queue_playback: false, queue_remote_playback: false,
     };
     p.config = { get: (key) => stored[key] };
@@ -606,6 +608,10 @@ async function main() {
     stored.align_volume = false;
     check('loudness off restarts',
       p.daemonSettingsChanged(Object.assign({}, stored, { loudness_normalization: false })) === true);
+    check('crossfade on restarts',
+      p.daemonSettingsChanged(Object.assign({}, stored, { crossfade: true })) === true);
+    check('crossfade_ms change restarts',
+      p.daemonSettingsChanged(Object.assign({}, stored, { crossfade_ms: 4000 })) === true);
     check('loudness unchanged does not restart',
       p.daemonSettingsChanged(Object.assign({}, stored)) === false);
   }
@@ -617,6 +623,7 @@ async function main() {
       api_key: 'k', device_name: 'Test', initial_volume: 35,
       cache_size_mb: 1024, cache_location: 'disk', buffer_ms: 300,
       output_trim_db: 4, verbose_logging: true, loudness_normalization: true,
+      crossfade: false, crossfade_ms: 2000,
       retain_api_key: true, queue_playback: false, queue_remote_playback: false,
       align_volume: false,
       seek_coalesce_ms: 200, inactive_hold_ms: 2000,
@@ -634,6 +641,8 @@ async function main() {
     check('partial save keeps align off', result.values.align_volume === false);
     check('partial save keeps trim', result.values.output_trim_db === 4);
     check('partial save keeps loudness on', result.values.loudness_normalization === true);
+    check('partial save keeps crossfade off', result.values.crossfade === false);
+    check('partial save keeps crossfade_ms', result.values.crossfade_ms === 2000);
     check('partial save keeps verbose', result.values.verbose_logging === true);
     check('partial save sets queue on', result.values.queue_playback === true);
     check('partial save keeps queue fetch wait', result.values.queue_fetch_ms === 2500);
@@ -1859,44 +1868,58 @@ async function main() {
     }
   }
 
-  // 47. loudness prefs: merge one engine key on spawn, default on
+  // 47. engine prefs: loudness default on, crossfade default off
   {
     const { spawnSync } = require('child_process');
-    const helper = path.join(__dirname, '..', 'apply-loudness.sh');
-    function runLoudness(dir, value) {
+    const helper = path.join(__dirname, '..', 'apply-engine-prefs.sh');
+    function runPrefs(dir, extra) {
       return spawnSync('bash', [helper], {
-        env: Object.assign({}, process.env, {
-          SOLOIST_DATA_DIR: dir,
-          LOUDNESS_NORMALIZATION: value,
-        }),
+        env: Object.assign({}, process.env, { SOLOIST_DATA_DIR: dir }, extra || {}),
         encoding: 'utf8',
       });
     }
 
     {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
-      const r = runLoudness(dir, 'false');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir);
       const global = path.join(dir, 'settings', 'prefs');
       const text = fs.existsSync(global) ? fs.readFileSync(global, 'utf8') : '';
-      check('helper exits 0', r.status === 0, String(r.status) + ' ' + (r.stderr || ''));
+      check('helper default exits 0', r.status === 0, String(r.status) + ' ' + (r.stderr || ''));
       check('helper writes global prefs', fs.existsSync(global));
       check('helper does not create Users',
         !fs.existsSync(path.join(dir, 'settings', 'Users')));
-      check('helper writes normalize false', text.trim() === 'audio.normalize_v2=false');
-      check('helper writes no crossfade key', text.indexOf('crossfade') === -1);
-      check('helper writes no quality key', text.indexOf('play_bitrate') === -1);
-      check('helper logs off', (r.stderr || '').indexOf('loudness_normalization=off') !== -1,
-        r.stderr);
+      check('helper default writes normalize on', text.indexOf('audio.normalize_v2=true') !== -1, text);
+      check('helper default writes crossfade off', text.indexOf('audio.crossfade_v2=false') !== -1, text);
+      check('helper default drops time key', text.indexOf('audio.crossfade.time_v2') === -1, text);
+      check('helper writes no quality key', text.indexOf('play_bitrate') === -1, text);
+      check('helper default logs loudness on',
+        (r.stderr || '').indexOf('engine_prefs loudness=on') !== -1, r.stderr);
+      check('helper default logs crossfade off',
+        (r.stderr || '').indexOf('crossfade=off') !== -1, r.stderr);
       check('helper logs one store', (r.stderr || '').indexOf('stores=1') !== -1, r.stderr);
       fs.rmSync(dir, { recursive: true, force: true });
     }
 
     {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir, { LOUDNESS_NORMALIZATION: 'false' });
+      const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
+      check('helper loudness off exits 0', r.status === 0, String(r.status));
+      check('helper writes normalize false', text.indexOf('audio.normalize_v2=false') !== -1, text);
+      check('helper loudness off keeps fade off',
+        text.indexOf('audio.crossfade_v2=false') !== -1 &&
+        text.indexOf('audio.crossfade.time_v2') === -1, text);
+      check('helper logs loudness off',
+        (r.stderr || '').indexOf('engine_prefs loudness=off') !== -1, r.stderr);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
       const global = path.join(dir, 'settings', 'prefs');
       fs.mkdirSync(path.dirname(global), { recursive: true });
       fs.writeFileSync(global, 'keep.me=1\naudio.normalize_v2=true\nother=yes\n');
-      const r = runLoudness(dir, 'false');
+      const r = runPrefs(dir, { LOUDNESS_NORMALIZATION: 'false' });
       const text = fs.readFileSync(global, 'utf8');
       check('helper merge exits 0', r.status === 0, String(r.status));
       check('helper keeps unrelated lines',
@@ -1908,28 +1931,84 @@ async function main() {
     }
 
     {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
       const user = path.join(dir, 'settings', 'Users', 'abc', 'prefs');
       fs.mkdirSync(path.dirname(user), { recursive: true });
       fs.writeFileSync(user, 'session=1\n');
-      const r = runLoudness(dir, 'true');
+      const r = runPrefs(dir, {
+        LOUDNESS_NORMALIZATION: 'true',
+        CROSSFADE: 'true',
+        CROSSFADE_MS: '4000',
+      });
       const userText = fs.readFileSync(user, 'utf8');
       check('helper user-store exits 0', r.status === 0, String(r.status));
       check('helper writes user prefs when present',
         userText.indexOf('audio.normalize_v2=true') !== -1 &&
+        userText.indexOf('audio.crossfade_v2=true') !== -1 &&
+        userText.indexOf('audio.crossfade.time_v2=4000') !== -1 &&
         userText.indexOf('session=1') !== -1, userText);
       check('helper writes both stores', (r.stderr || '').indexOf('stores=2') !== -1, r.stderr);
+      check('helper logs fade time',
+        (r.stderr || '').indexOf('crossfade=4000ms') !== -1, r.stderr);
       check('helper does not add a second user dir',
         fs.readdirSync(path.join(dir, 'settings', 'Users')).join(',') === 'abc');
       fs.rmSync(dir, { recursive: true, force: true });
     }
 
     {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-loud-'));
-      const r = runLoudness(dir, 'junk');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const global = path.join(dir, 'settings', 'prefs');
+      fs.mkdirSync(path.dirname(global), { recursive: true });
+      fs.writeFileSync(global,
+        'audio.crossfade_v2=true\naudio.crossfade.time_v2=4000\nsession=1\n');
+      const r = runPrefs(dir, { CROSSFADE: 'false' });
+      const text = fs.readFileSync(global, 'utf8');
+      check('helper off-after-on exits 0', r.status === 0, String(r.status));
+      check('helper off writes boolean false', text.indexOf('audio.crossfade_v2=false') !== -1, text);
+      check('helper off drops stale time', text.indexOf('audio.crossfade.time_v2') === -1, text);
+      check('helper off keeps unrelated', text.indexOf('session=1') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir, { CROSSFADE: 'true', CROSSFADE_MS: '500' });
+      const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
+      check('helper short ms exits 0', r.status === 0);
+      check('helper short ms clamps to 2000',
+        text.indexOf('audio.crossfade.time_v2=2000') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir, { CROSSFADE: 'true', CROSSFADE_MS: 'junk' });
+      const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
+      check('helper junk ms exits 0', r.status === 0);
+      check('helper junk ms writes 2000',
+        text.indexOf('audio.crossfade.time_v2=2000') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir, { CROSSFADE: 'true', CROSSFADE_MS: '15000' });
+      const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
+      check('helper high ms exits 0', r.status === 0);
+      check('helper high ms clamps to 12000',
+        text.indexOf('audio.crossfade.time_v2=12000') !== -1, text);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'soloist-prefs-'));
+      const r = runPrefs(dir, { LOUDNESS_NORMALIZATION: 'junk', CROSSFADE: 'junk' });
       const text = fs.readFileSync(path.join(dir, 'settings', 'prefs'), 'utf8');
       check('helper junk env exits 0', r.status === 0);
-      check('helper junk env writes on', text.indexOf('audio.normalize_v2=true') !== -1, text);
+      check('helper junk loudness writes on', text.indexOf('audio.normalize_v2=true') !== -1, text);
+      check('helper junk fade writes off',
+        text.indexOf('audio.crossfade_v2=false') !== -1 &&
+        text.indexOf('audio.crossfade.time_v2') === -1, text);
       fs.rmSync(dir, { recursive: true, force: true });
     }
 
@@ -1939,6 +2018,10 @@ async function main() {
       const snap = p.settingsBackupSnapshot();
       check('backup includes loudness_normalization',
         snap.values.loudness_normalization === true, JSON.stringify(snap.values));
+      check('backup includes crossfade off',
+        snap.values.crossfade === false, JSON.stringify(snap.values));
+      check('backup includes crossfade_ms',
+        snap.values.crossfade_ms === 2000, JSON.stringify(snap.values));
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }

@@ -1,6 +1,6 @@
 {
   "name": "soloist_connect",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "description": "Spotify Connect on Volumio 4 via Spotify Soloist, playing through pcm.volumio (ALSA, no Pulse)",
   "main": "index.js",
   "scripts": {
@@ -21,7 +21,7 @@
       "bookworm"
     ],
     "details": "Beta. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.9), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
-    "changelog": "0.8.7: Sound switch for Spotify loudness normalization (on by default). Off writes audio.normalize_v2=false into the engine prefs at each spawn. Not Output Trim. No CLI for this; undocumented engine store. Takeover, queue and the shim unchanged (0.2.9)."
+    "changelog": "0.8.8: Sound switch for Spotify crossfade (off by default) plus 1000-12000 ms duration. Off drops the time key so a leftover fade cannot stay on. Same undocumented engine prefs pass as loudness. Not Output buffer. Takeover, queue, loudness default and the shim unchanged (0.2.9)."
   },
   "engines": {
     "node": ">=20",

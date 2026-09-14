@@ -29,6 +29,8 @@ const SETTINGS_BACKUP_KEYS = [
   'align_volume',
   'output_trim_db',
   'loudness_normalization',
+  'crossfade',
+  'crossfade_ms',
   'buffer_ms',
   'cache_location',
   'cache_size_mb',
@@ -558,6 +560,8 @@ SoloistConnect.prototype.writeEnvFile = function () {
     `TLENGTH_MS="${this.config.get('buffer_ms')}"`,
     `OUTPUT_TRIM_DB="${this.config.get('output_trim_db')}"`,
     `LOUDNESS_NORMALIZATION="${this.config.get('loudness_normalization') !== false ? 'true' : 'false'}"`,
+    `CROSSFADE="${this.config.get('crossfade') === true ? 'true' : 'false'}"`,
+    `CROSSFADE_MS="${parseInt(this.config.get('crossfade_ms'), 10) || 2000}"`,
     `EXTERNAL_VOLUME="${this.mixerIsExternal() ? 'true' : 'false'}"`,
     // Read by uninstall.sh, which runs after the plugin config has been
     // rendered unreadable and cannot consult it.
@@ -3372,6 +3376,8 @@ SoloistConnect.prototype.getUIConfig = function () {
       set('queue_fetch_ms', self.queueFetchMs());
       set('output_trim_db', self.config.get('output_trim_db'));
       set('loudness_normalization', self.config.get('loudness_normalization') !== false);
+      set('crossfade', self.config.get('crossfade') === true);
+      set('crossfade_ms', self.config.get('crossfade_ms'));
       set('queue_playback', self.config.get('queue_playback') === true);
       set('queue_remote_playback', self.config.get('queue_remote_playback') === true);
       set('verbose_logging', self.config.get('verbose_logging') === true);
@@ -3470,6 +3476,13 @@ SoloistConnect.prototype.validateSettings = function (data) {
     return { ok: false, message: 'Output trim must be an integer between -12 and 12 dB.' };
   }
 
+  const crossfadeMs = this.postedOrStoredInt(
+    data, 'crossfade_ms', 2000, (n) => n >= 1000 && n <= 12000
+  );
+  if (!crossfadeMs.ok) {
+    return { ok: false, message: 'Crossfade time must be between 1000 and 12000 ms.' };
+  }
+
   // A UI select hands back either the bare value or {value,label}, depending on
   // how the field was rendered and whether it was touched. Take both.
   //
@@ -3565,6 +3578,14 @@ SoloistConnect.prototype.validateSettings = function (data) {
           ? true
           : this.config.get('loudness_normalization')
       ),
+      crossfade: this.postedOrStoredBool(
+        data,
+        'crossfade',
+        this.config.get('crossfade') === undefined
+          ? false
+          : this.config.get('crossfade')
+      ),
+      crossfade_ms: crossfadeMs.value,
       retain_api_key: this.postedOrStoredBool(
         data, 'retain_api_key', this.config.get('retain_api_key')
       ),
@@ -3606,6 +3627,8 @@ const DAEMON_SETTINGS = [
   'buffer_ms',
   'output_trim_db',
   'loudness_normalization',
+  'crossfade',
+  'crossfade_ms',
   'verbose_logging',
 ];
 
@@ -3642,6 +3665,8 @@ SoloistConnect.prototype.applyValidatedSettings = function (values, opts) {
   this.config.set('queue_fetch_ms', values.queue_fetch_ms);
   this.config.set('output_trim_db', values.output_trim_db);
   this.config.set('loudness_normalization', values.loudness_normalization);
+  this.config.set('crossfade', values.crossfade);
+  this.config.set('crossfade_ms', values.crossfade_ms);
   this.config.set('retain_api_key', values.retain_api_key);
   this.config.set('queue_playback', values.queue_playback);
   this.config.set('queue_remote_playback', values.queue_remote_playback);

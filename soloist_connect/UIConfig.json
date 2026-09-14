@@ -154,6 +154,8 @@
           "align_volume",
           "output_trim_db",
           "loudness_normalization",
+          "crossfade",
+          "crossfade_ms",
           "buffer_ms"
         ]
       },
@@ -203,6 +205,29 @@
           "label": "TRANSLATE.LOUDNESS_NORMALIZATION",
           "doc": "TRANSLATE.LOUDNESS_NORMALIZATION_DOC",
           "value": true
+        },
+        {
+          "id": "crossfade",
+          "element": "switch",
+          "label": "TRANSLATE.CROSSFADE",
+          "doc": "TRANSLATE.CROSSFADE_DOC",
+          "value": false
+        },
+        {
+          "id": "crossfade_ms",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.CROSSFADE_MS",
+          "doc": "TRANSLATE.CROSSFADE_MS_DOC",
+          "value": 2000,
+          "attributes": [
+            {
+              "min": 1000
+            },
+            {
+              "max": 12000
+            }
+          ]
         },
         {
           "id": "buffer_ms",

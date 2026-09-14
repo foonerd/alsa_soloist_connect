@@ -55,6 +55,14 @@
     "type": "boolean",
     "value": true
   },
+  "crossfade": {
+    "type": "boolean",
+    "value": false
+  },
+  "crossfade_ms": {
+    "type": "number",
+    "value": 2000
+  },
   "retain_api_key": {
     "type": "boolean",
     "value": true
