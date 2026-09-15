@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.8.**
+> **Beta, version 0.8.9.**
 > This is the first beta. The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -217,7 +217,7 @@ Notable points:
 - `libatomic1` and `patchelf` are installed if missing.
 - Bookworm's glibc is 2.36 and Soloist needs 2.38 or newer. A private sysroot is sideloaded into `/data/soloist/sysroot` and the binary is ELF-patched against it. The system glibc is left alone. Launching through an explicit `ld-linux` instead of patching breaks Soloist's subprocesses.
 - The launcher exports the ALSA device as `APULSE_PLAYBACK_DEVICE`, derived from `PLAYBACK_DEVICE` in the env file. The names are historical. The unit deliberately does **not** pin the device: the launcher treats an existing value as an override, so a pinned unit would win permanently and PeppyMeter metering would silently do nothing. `unpin-playback-device.sh` removes the line from older installs. The launcher also exports `APULSE_MAX_TLENGTH_MS`, `APULSE_YIELD_PATH`, `APULSE_EXTERNAL_VOLUME` and, when non-zero, `APULSE_OUTPUT_TRIM_DB`.
-- Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; the plugin re-downloads on the next start.
+- Exit code 10 means the build expired. The unit uses `RestartPreventExitStatus=10` so it does not loop; `ensureBinaryFresh` re-downloads on the next `startDaemon`. While the plugin process stays up, a 24 h timer inspects remaining days from `soloist --version`. Opt-in `auto_update_binary` (default off) may then pull through the same download script and restart the daemon without the Update-button reboot.
 - The unit has no `[Install]` `WantedBy`. Plugin `onStart` restarts it; `onStop` stops it and disables it so a leftover enable cannot bring the daemon back at boot with the plugin off.
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
@@ -509,7 +509,7 @@ The journal is in memory and a reboot destroys it. `journalctl -b -u soloist -u 
 
 ## Known limitations
 
-- **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads on start and offers a manual update button. The button shows a progress modal, then a 15 second reboot countdown with Restart and Cancel. A failed download leaves the running binary alone.
+- **90-day build expiry.** Soloist builds stop working 90 days after their build date. This is a Spotify design decision. The plugin re-downloads an expired build on start. A once-a-day check in the plugin process can warn, or with **Download a new Soloist binary before it expires** on, pull when seven days or fewer remain and Spotify is not playing here. That silent pull does not reboot. The manual Update button still shows a progress modal, then a 15 second reboot countdown with Restart and Cancel. A failed download leaves the running binary alone. We do not review the tarball Spotify serves.
 - **Skip and seek are not instant.** Bounded by the Output Buffer setting. The flush now discards, so what remains is the buffer itself rather than stale audio playing out.
 - **Soloist has no latency control of its own.** Its CLI has no buffer or latency option, and the PulseAudio buffer parameters it uses are configured remotely by Spotify. The cap is applied in the shim instead.
 - **FusionDSP changes the numbers.** CamillaDSP adds `chunksize`, `target_level` and `extra_samples` beyond our buffer, and its FIFO is `clear_on_drop "false"`. The 500 ms default has not been re-measured with FusionDSP enabled.

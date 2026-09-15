@@ -79,6 +79,10 @@
     "type": "boolean",
     "value": false
   },
+  "auto_update_binary": {
+    "type": "boolean",
+    "value": false
+  },
   "peppy_metering": {
     "type": "boolean",
     "value": false

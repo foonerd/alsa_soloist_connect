@@ -119,6 +119,7 @@ function writablePlugin(config, backupDir) {
     loudness_normalization: true,
     crossfade: false,
     crossfade_ms: 2000,
+    auto_update_binary: false,
     peppy_metering: false,
   }, config || {});
   const p = newPlugin(settings);
@@ -614,6 +615,8 @@ async function main() {
       p.daemonSettingsChanged(Object.assign({}, stored, { crossfade_ms: 4000 })) === true);
     check('loudness unchanged does not restart',
       p.daemonSettingsChanged(Object.assign({}, stored)) === false);
+    check('auto_update_binary on does not restart',
+      p.daemonSettingsChanged(Object.assign({}, stored, { auto_update_binary: true })) === false);
   }
 
   // 21b. a section save posts only its own fields
@@ -629,6 +632,7 @@ async function main() {
       seek_coalesce_ms: 200, inactive_hold_ms: 2000,
       quality_retry_ms: 300, quality_retry_max: 2,
       queue_fetch_ms: 2500,
+      auto_update_binary: false,
     };
     p.config = { get: (key) => stored[key] };
     const result = p.validateSettings({
@@ -646,8 +650,18 @@ async function main() {
     check('partial save keeps verbose', result.values.verbose_logging === true);
     check('partial save sets queue on', result.values.queue_playback === true);
     check('partial save keeps queue fetch wait', result.values.queue_fetch_ms === 2500);
+    check('partial save keeps auto_update_binary off',
+      result.values.auto_update_binary === false);
     check('partial queue save does not restart',
       p.daemonSettingsChanged(result.values) === false);
+    const updateOnly = p.validateSettings({ auto_update_binary: true });
+    check('update section save is accepted', updateOnly.ok === true, updateOnly.message);
+    check('update section save sets auto_update_binary',
+      updateOnly.values.auto_update_binary === true);
+    check('update section save keeps queue off',
+      updateOnly.values.queue_playback === false);
+    check('update section save does not restart',
+      p.daemonSettingsChanged(updateOnly.values) === false);
   }
 
   // 22. a row is not sent to a session we do not hold
@@ -1339,6 +1353,8 @@ async function main() {
       browsePushes.some((e) => e.emit === 'modalProgress' && e.payload.progressNumber === 10));
     check('success starts the 15s countdown instead of the daemon',
       countdown === 1 && started === 0);
+    check('success drops the shared busy flag so a later tick can pull',
+      p.binaryUpdateBusy === false);
     check('countdown modal has Restart, Cancel and 15 seconds',
       browsePushes.some((e) => e.emit === 'openModal' && !e.payload.progress &&
         /15 seconds/.test(e.payload.message) &&
@@ -1687,7 +1703,7 @@ async function main() {
       const p = writablePlugin({
         retain_api_key: false,
         api_key: 'spak_live',
-        device_name: 'Hanger',
+        device_name: 'Speaker',
         peppy_metering: true,
       }, dir);
       toasts.length = 0;
@@ -1704,7 +1720,7 @@ async function main() {
       logs.length = 0;
       p.restoreSettingsBackup({ selected_backup: 'no-key' });
       check('restore without key keeps live api_key', p.config.get('api_key') === 'spak_kept');
-      check('restore without key applies device_name', p.config.get('device_name') === 'Hanger');
+      check('restore without key applies device_name', p.config.get('device_name') === 'Speaker');
       check('restore does not write peppy_metering', p.config.get('peppy_metering') === true);
     }
 
@@ -2022,8 +2038,127 @@ async function main() {
         snap.values.crossfade === false, JSON.stringify(snap.values));
       check('backup includes crossfade_ms',
         snap.values.crossfade_ms === 2000, JSON.stringify(snap.values));
+      check('backup includes auto_update_binary off',
+        snap.values.auto_update_binary === false, JSON.stringify(snap.values));
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  // 48. binary freshness: parse --version, daily clock, skip play/busy, pull does not reboot
+  {
+    const p = newPlugin();
+    const built = 'Spotify Soloist 1.3.8.36 (20260617)';
+    const day0 = Date.UTC(2026, 5, 17);
+    check('remaining at build day is 90',
+      p.remainingBinaryDays(built, 0, day0) === 90);
+    check('remaining at day 83 is 7',
+      p.remainingBinaryDays(built, 0, day0 + 83 * 86400000) === 7);
+    check('remaining at day 90 is 0',
+      p.remainingBinaryDays(built, 0, day0 + 90 * 86400000) === 0);
+    check('remaining after expiry is 0',
+      p.remainingBinaryDays(built, 0, day0 + 91 * 86400000) === 0);
+    check('exit 10 is already dead',
+      p.remainingBinaryDays(built, 10, day0) === 0);
+    check('junk version is unknown',
+      p.remainingBinaryDays('not a version', 0, day0) === null);
+    check('missing date is unknown',
+      p.remainingBinaryDays('1.3.8.36', 0, day0) === null);
+
+    let ticks = 0;
+    p.runFreshnessTick = function () { ticks++; };
+    p.freshnessCheckMs = 40;
+    logs.length = 0;
+    p.armFreshnessTimer({ initial: true });
+    check('arm logs the 24h period once',
+      logs.filter((l) => l.indexOf('freshness armed period=24h') !== -1).length === 1,
+      logs.join(' | '));
+    await new Promise((r) => setTimeout(r, 80));
+    check('first fire is after the delay, not at arm', ticks === 1, String(ticks));
+    logs.length = 0;
+    p.armFreshnessTimer();
+    check('re-arm does not log again',
+      !logs.some((l) => l.indexOf('freshness armed') !== -1), logs.join(' | '));
+    p.clearFreshnessTimer();
+    const ticksAfterClear = ticks;
+    await new Promise((r) => setTimeout(r, 80));
+    check('clear stops the pending fire', ticks === ticksAfterClear, String(ticks));
+
+    function freshnessActions(opts) {
+      const fp = newPlugin({ auto_update_binary: !!opts.auto });
+      let pulled = 0;
+      fp.volatileSet = !!opts.volatile;
+      fp.queueMode = !!opts.queue;
+      fp.binaryUpdateBusy = !!opts.busy;
+      fp.pullFreshBinary = function () { pulled++; };
+      logs.length = 0;
+      toasts.length = 0;
+      fp.applyFreshness(opts.remaining);
+      const line = logs.find((l) => l.indexOf('SoloistConnect: freshness remaining=') !== -1) || '';
+      return { pulled: pulled, line: line, toasts: toasts.slice() };
+    }
+
+    const farOff = freshnessActions({ remaining: 80, auto: false });
+    check('far remaining auto-off is noop',
+      /remaining=80 auto=off action=noop/.test(farOff.line) && farOff.pulled === 0,
+      farOff.line);
+    const expiredOff = freshnessActions({ remaining: 0, auto: false });
+    check('expired auto-off toasts for the button',
+      /remaining=0 auto=off action=expired-off/.test(expiredOff.line) &&
+      expiredOff.pulled === 0 &&
+      expiredOff.toasts.some((t) => /expired/.test(t.msg)),
+      expiredOff.line);
+    const unknown = freshnessActions({ remaining: null, auto: true });
+    check('unknown remaining is noop',
+      /remaining=unknown auto=on action=noop/.test(unknown.line) && unknown.pulled === 0,
+      unknown.line);
+    const farOn = freshnessActions({ remaining: 80, auto: true });
+    check('far remaining auto-on is noop',
+      /remaining=80 auto=on action=noop/.test(farOn.line) && farOn.pulled === 0,
+      farOn.line);
+    const play = freshnessActions({ remaining: 3, auto: true, volatile: true });
+    check('near expiry while we own playback skips',
+      /remaining=3 auto=on action=skip-play/.test(play.line) && play.pulled === 0,
+      play.line);
+    const queue = freshnessActions({ remaining: 3, auto: true, queue: true });
+    check('near expiry on a queue row skips',
+      /remaining=3 auto=on action=skip-play/.test(queue.line) && queue.pulled === 0,
+      queue.line);
+    const busy = freshnessActions({ remaining: 3, auto: true, busy: true });
+    check('shared busy flag skips a pull',
+      /remaining=3 auto=on action=skip-busy/.test(busy.line) && busy.pulled === 0,
+      busy.line);
+    const radio = freshnessActions({ remaining: 3, auto: true });
+    check('web radio and other idle sources can pull',
+      /remaining=3 auto=on action=pull/.test(radio.line) && radio.pulled === 1,
+      radio.line);
+
+    const puller = newPlugin({ auto_update_binary: true });
+    let countdown = 0;
+    let started = 0;
+    puller.initUpdateRebootCountdown = function () { countdown++; };
+    puller.startDaemon = function () { started++; return libQ.resolve(); };
+    puller.connectWebSocket = function () { logs.push('connectWebSocket'); };
+    puller.runDownloadScript = function (cb) { cb(null); };
+    logs.length = 0;
+    toasts.length = 0;
+    puller.pullFreshBinary();
+    await new Promise((r) => setTimeout(r, 30));
+    check('silent pull starts the daemon and does not reboot',
+      started === 1 && countdown === 0 && !logs.includes('reboot'),
+      'started=' + started + ' countdown=' + countdown);
+    check('silent pull drops the busy flag', puller.binaryUpdateBusy === false);
+    check('silent pull says no reboot',
+      toasts.some((t) => t.type === 'success' && /No reboot/.test(t.msg)));
+
+    const failPull = newPlugin({ auto_update_binary: true });
+    failPull.initUpdateRebootCountdown = function () { countdown++; };
+    failPull.startDaemon = function () { started++; return libQ.resolve(); };
+    failPull.runDownloadScript = function (cb) { cb(new Error('cdn fail')); };
+    toasts.length = 0;
+    failPull.pullFreshBinary();
+    check('failed silent pull leaves the running binary',
+      failPull.binaryUpdateBusy === false &&
+      toasts.some((t) => t.type === 'error' && /left alone/.test(t.msg)));
   }
 
   console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
