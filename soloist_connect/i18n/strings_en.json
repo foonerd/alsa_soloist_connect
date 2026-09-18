@@ -59,7 +59,7 @@
   "LOUDNESS_NORMALIZATION_DOC": "Spotify's own track-to-track level matching, written into the engine prefs at start. On is the current behaviour. Off leaves the original track level. This is not Output Trim. Saving restarts Soloist. The engine has no official switch for this.",
   "CROSSFADE": "Crossfade",
   "CROSSFADE_DOC": "Spotify's own fade between consecutive tracks, written into the engine prefs at start. Off is a hard cut, which is the current behaviour. This is not Output buffer. Saving restarts Soloist. The engine has no official switch for this.",
-  "CROSSFADE_MS": "Crossfade time (ms)",
+  "CROSSFADE_MS": "Crossfade time (\u33b3)",
   "CROSSFADE_MS_DOC": "How long the fade lasts when Crossfade is on (1000-12000). Used only when the switch is on. Below 1000 does nothing. Default 2000. Saving restarts Soloist.",
   "QUEUE_PLAYBACK": "Play Spotify tracks from the Volumio queue",
   "QUEUE_PLAYBACK_DOC": "Let a Spotify track sitting in a Volumio playlist or queue play through Soloist, so one list can mix Spotify with local files, UPnP and web radio. Off by default. When this is on, a Spotify Queue tile also appears on Browse; tapping a track there uses the same play path. Off hides that tile, because those songs would otherwise skip. A Spotify entry needs service 'soloist_connect' in the playlist; entries saved for the old Spotify plugin say 'spop' and are not affected. Turning this off does not hide those rows: they still appear in the queue and are skipped when reached, and the list carries on with the next track. Requires a paired Spotify session; the Spotify app does not have to be open. Names and artwork come from what Soloist has already reported this session, so a track it has not seen shows a placeholder until it starts playing.",

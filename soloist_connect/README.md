@@ -1,7 +1,6 @@
 # Spotify Soloist Connect
 
-> **Beta, version 0.8.9.**
-> First beta. Expect remaining rough edges, and see "Things to know" below.
+> **Stable, version 0.9.0.**
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
 Turns a Volumio 4 device into a Spotify Connect endpoint using Spotify Soloist.
@@ -206,7 +205,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.8.9 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.9.0 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

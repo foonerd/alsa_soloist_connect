@@ -7,8 +7,8 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Beta, version 0.8.9.**
-> This is the first beta. The store package, when published, is a separately accepted build.
+> **Stable, version 0.9.0.**
+> The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
 > Not affiliated with, endorsed by or sponsored by Spotify AB.
@@ -150,7 +150,7 @@ Environment names stay `APULSE_*`. They are historical; renaming is a later chan
 
 `volumio plugin install` must be run from the plugin tree (`soloist_connect/`), where `package.json` lives.
 
-### Store (accepted beta)
+### Store (accepted stable)
 
 In Volumio: **Plugins → Music Services** → **Spotify Soloist Connect**.
 

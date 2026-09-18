@@ -1,6 +1,6 @@
 {
   "name": "soloist_connect",
-  "version": "0.8.9",
+  "version": "0.9.0",
   "description": "Spotify Connect on Volumio 4 via Spotify Soloist, playing through pcm.volumio (ALSA, no Pulse)",
   "main": "index.js",
   "scripts": {
@@ -20,8 +20,8 @@
     "os": [
       "bookworm"
     ],
-    "details": "Beta. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.9), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
-    "changelog": "0.8.9: Optional once-a-day Soloist binary refresh while the plugin stays up. Off by default. When on, a new binary is pulled from Spotify if seven days or fewer remain, or the build is already expired, and Spotify is not playing here. That pull starts the new binary and does not reboot. The Update button still uses the 15 second reboot countdown. We do not review the tarball Spotify serves. On start an already-dead build is still re-downloaded. Crossfade, loudness, takeover, queue and the shim unchanged (0.2.9)."
+    "details": "Stable. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.9), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
+    "changelog": "0.9.0: Promoted to stable."
   },
   "engines": {
     "node": ">=20",
