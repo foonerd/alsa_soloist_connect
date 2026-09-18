@@ -14,7 +14,6 @@
     "plugin_type": "music_service",
     "icon": "fa-spotify",
     "architectures": [
-      "amd64",
       "armhf"
     ],
     "os": [
