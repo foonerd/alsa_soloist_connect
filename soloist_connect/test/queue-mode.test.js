@@ -1884,6 +1884,121 @@ async function main() {
     }
   }
 
+  // 46b. playing before is_active is claimed from device_changed only
+  //
+  // Soloist can send playing while is_active is still false, then
+  // device_changed. The refusal is replayed from that edge for 2s
+  // (CLAIM_DEFER_MS). Activation, auth_state, queue mode, pause, an aged
+  // refusal, and the yield window do not claim.
+  {
+    function claimPlugin(config) {
+      const p = newPlugin(Object.assign({ queue_playback: false }, config || {}));
+      p.takeovers = 0;
+      p.takeOverPlayback = function () { this.takeovers++; };
+      return p;
+    }
+
+    {
+      const p = claimPlugin();
+      logs.length = 0;
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.handleEvent({ type: 'playback_changed', status: 'playing' });
+      check('split handover has not claimed yet',
+        p.takeovers === 0 && p.state.status === 'pause' && p.claimDeferredAt > 0);
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('device_changed claims the deferred play',
+        p.takeovers === 1 && p.deviceActive === true && p.state.status === 'play' &&
+        p.claimDeferredAt === 0);
+      check('device_changed logs the deferred claim',
+        logs.some((l) => l === 'info SoloistConnect: claiming deferred play: is_active=true'),
+        logs.join(' | '));
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('second device_changed does not claim again', p.takeovers === 1);
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.claimDeferredAt = Date.now() - 2500;
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('aged refusal does not claim on activation',
+        p.takeovers === 0 && p.claimDeferredAt === 0 && p.state.status === 'pause');
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('activation with no refused play does not claim',
+        p.takeovers === 0 && p.claimDeferredAt === 0);
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.handleEvent(evt('paused', OURS, 1000, 'spotify:album:x', item, false));
+      check('paused clears the deferred play', p.claimDeferredAt === 0 && p.state.status === 'pause');
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('activation after pause does not claim', p.takeovers === 0);
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.pendingYieldAt = Date.now();
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('yield window blocks the deferred claim',
+        p.takeovers === 0 && p.state.status === 'pause' && p.claimDeferredAt === 0);
+      p.pendingYieldAt = 0;
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('later device_changed does not revive a swallowed claim', p.takeovers === 0);
+    }
+
+    {
+      const p = claimPlugin();
+      p.pendingYieldAt = Date.now();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      check('leftover play is not remembered',
+        p.takeovers === 0 && p.claimDeferredAt === 0 && p.state.status === 'pause');
+      p.clearInactiveHold();
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.handleEvent({ type: 'device_changed', is_active: true, status: 'paused' });
+      check('device_changed paused does not claim',
+        p.takeovers === 0 && p.claimDeferredAt === 0 && p.state.status === 'pause');
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      const remembered = p.claimDeferredAt;
+      p.handleEvent({ type: 'auth_state', logged_in: true, is_active: true });
+      check('auth_state does not replay a refused play',
+        p.takeovers === 0 && p.claimDeferredAt === remembered && p.deviceActive === true);
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.queueMode = true;
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('queue mode does not replay a refused play',
+        p.takeovers === 0 && p.claimDeferredAt === 0 && p.state.status === 'pause');
+    }
+
+    {
+      const p = claimPlugin();
+      p.handleEvent(evt('playing', OURS, 1000, 'spotify:album:x', item, false));
+      p.handleEvent(evt('buffering', OURS, 1000, 'spotify:album:x', item, false));
+      check('buffering keeps the deferred play', p.claimDeferredAt > 0 && p.takeovers === 0);
+      p.handleEvent({ type: 'device_changed', is_active: true });
+      check('device_changed after buffering still claims',
+        p.takeovers === 1 && p.state.status === 'play');
+    }
+  }
+
   // 47. engine prefs: loudness default on, crossfade default off
   {
     const { spawnSync } = require('child_process');
