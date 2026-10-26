@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Cutting-edge, version 0.9.1.** The store package stays 0.9.0 until this build is accepted.
+> **Cutting-edge, version 0.9.2.** The store package stays 0.9.1 until this build is accepted.
 > The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -307,7 +307,7 @@ A row that cannot play (setting off, not logged in, not a track URI, or another 
 
 The row ends on buffering within 1.5 s of duration, idle after first audio, `track_changed` to another URI, or a roll. `endQueueRow` waits for ALSA if we still hold it. `startPlaybackTimer` is not called when metadata arrives: that would arm a second seek clock. Duration is written onto `currentSongDuration` instead.
 
-`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile that is registered only while `queue_playback` is on. An open tile is refreshed from those events (full `get_queue`, because a broadcast `queue_changed` is capped at 10). Soloist's upcoming list is not pushed into Volumio's play queue.
+`owningPlayback()` is `volatileSet || queueMode`, so seek, mixer and quality retry still work on a queue row. `queue_changed` is harvested for `explodeUri` metadata and for a browse tile that is registered only while `queue_playback` is on. The page is built from a full `get_queue` when it is opened, because a broadcast `queue_changed` is capped at 10. It is not pushed to clients afterwards: Volumio hands a plugin only the URI, never the client, so a refresh could only reach every client and would navigate them all. A change shows on the next open. A REST browse of `soloist_connect` is therefore a side-effect-free read of the list. Soloist's upcoming list is not pushed into Volumio's play queue.
 
 Settings that only this process reads do not restart the daemon. A section save posts only its fields; absent keys keep the stored value. Named settings backups live under `/data/INTERNAL/soloist_connect/backups` and are applied through that same validate-and-save path. The API key is written into a backup only when Retain my API key is on. The paired Spotify session is not in the snapshot.
 
