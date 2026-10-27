@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node test/queue-mode.test.js"
   },
-  "author": "Wheaten, Just a Nerd",
+  "author": "Just a Nerd",
   "license": "MIT",
   "repository": "https://github.com/foonerd/alsa_soloist_connect",
   "volumio_info": {
