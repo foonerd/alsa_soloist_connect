@@ -46,12 +46,9 @@ if ! ldconfig -p | grep -q libatomic.so.1; then
   DEBIAN_FRONTEND=noninteractive apt-get install -y libatomic1
 fi
 
-# Needed to ELF-patch the soloist binary against the sideloaded glibc.
-if ! command -v patchelf >/dev/null 2>&1; then
-  echo "Installing patchelf..."
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y patchelf
-fi
+# patchelf ELF-patches the soloist binary against the sideloaded glibc. Volumio 3
+# (buster) has no usable patchelf in apt: setup-glibc.sh takes it from Debian
+# trixie into the sysroot when the system has none, so apt is not touched here.
 
 # ---------------------------------------------------------------------------
 # Data, cache and env directories

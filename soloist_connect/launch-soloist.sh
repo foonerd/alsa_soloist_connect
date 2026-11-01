@@ -15,6 +15,8 @@ fi
 SYSROOT="/data/soloist/sysroot"
 PATCHELF="/usr/bin/patchelf"
 [ -x "$PATCHELF" ] || PATCHELF="$(command -v patchelf || true)"
+# Volumio 3: no system patchelf, setup-glibc.sh writes a wrapper here
+[ -n "$PATCHELF" ] || PATCHELF="/data/soloist/bin/patchelf"
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "Missing $ENV_FILE - save the plugin settings in Volumio first." >&2

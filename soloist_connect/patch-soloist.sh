@@ -18,6 +18,8 @@ BIN="${1:-/data/soloist/bin/soloist}"
 SYSROOT="/data/soloist/sysroot"
 PATCHELF="${PATCHELF:-/usr/bin/patchelf}"
 command -v "$PATCHELF" >/dev/null 2>&1 || PATCHELF="$(command -v patchelf || true)"
+# Volumio 3: no system patchelf, setup-glibc.sh writes a wrapper here
+[ -n "$PATCHELF" ] || PATCHELF="/data/soloist/bin/patchelf"
 
 if [ ! -f "$BIN" ]; then
   echo "patch-soloist: binary not found at $BIN" >&2

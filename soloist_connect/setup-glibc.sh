@@ -44,10 +44,10 @@ if [ -d "$SYSROOT" ] && ! have_loader; then
   rm -rf "$SYSROOT"
 fi
 
-if [ -d "$SYSROOT" ] && have_loader; then
-  echo "Sysroot already has $ARCH glibc ($LOADER_NAME)."
-else
-  echo "System glibc is $CUR; sideloading $ARCH glibc from Debian trixie..."
+# Extracts the named trixie packages into the sysroot (dpkg-deb -x, nothing is
+# installed in the system).
+fetch_trixie() {
+  local TMP PKG FILE
   mkdir -p "$SYSROOT"
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
@@ -57,7 +57,7 @@ else
   curl -fsSL --retry 3 -o "$TMP/Packages.gz" \
     "$MIRROR/dists/trixie/main/binary-$DEB_ARCH/Packages.gz"
 
-  for PKG in libc6 libgcc-s1 libstdc++6 libatomic1; do
+  for PKG in "$@"; do
     FILE=$(zcat "$TMP/Packages.gz" | awk -v p="$PKG" '
       $1=="Package:" { found = ($2==p) }
       found && $1=="Filename:" { print $2; exit }')
@@ -71,6 +71,13 @@ else
   done
   trap - EXIT
   rm -rf "$TMP"
+}
+
+if [ -d "$SYSROOT" ] && have_loader; then
+  echo "Sysroot already has $ARCH glibc ($LOADER_NAME)."
+else
+  echo "System glibc is $CUR; sideloading $ARCH glibc from Debian trixie..."
+  fetch_trixie libc6 libgcc-s1 libstdc++6 libatomic1
 fi
 
 if ! have_loader; then
@@ -78,10 +85,24 @@ if ! have_loader; then
   exit 1
 fi
 
+# Volumio 3 (buster): apt has no usable patchelf, so take trixie's into the
+# sysroot and run it through the sideloaded loader. The wrapper lives in
+# $BIN_DIR, where the other scripts look after the system patchelf.
 if ! command -v patchelf >/dev/null 2>&1 && [ ! -x /usr/bin/patchelf ]; then
-  echo "Installing patchelf..."
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y patchelf
+  if [ ! -x "$SYSROOT/usr/bin/patchelf" ]; then
+    echo "No system patchelf; taking patchelf from Debian trixie..."
+    fetch_trixie patchelf
+  fi
+  LOADER=$(find "$SYSROOT" -name "$LOADER_NAME" 2>/dev/null | head -n 1)
+  LIBPATH="$SYSROOT/lib/$TRIPLET:$SYSROOT/usr/lib/$TRIPLET:$SYSROOT/lib:$SYSROOT/usr/lib"
+  mkdir -p "$BIN_DIR"
+  cat > "$BIN_DIR/patchelf" << EOF
+#!/bin/sh
+# patchelf from Debian trixie, run with the sideloaded glibc (written by setup-glibc.sh)
+exec "$LOADER" --library-path "$LIBPATH" "$SYSROOT/usr/bin/patchelf" "\$@"
+EOF
+  chmod 0755 "$BIN_DIR/patchelf"
+  echo "patchelf: $("$BIN_DIR/patchelf" --version)"
 fi
 
 if [ ! -f "$BIN" ]; then

@@ -82,6 +82,8 @@ bash "$HERE/setup-glibc.sh" "$STAGE"
 
 PATCHELF="/usr/bin/patchelf"
 [ -x "$PATCHELF" ] || PATCHELF="$(command -v patchelf || true)"
+# Volumio 3: no system patchelf, setup-glibc.sh writes a wrapper here
+[ -n "$PATCHELF" ] || PATCHELF="/data/soloist/bin/patchelf"
 if [ -d /data/soloist/sysroot ]; then
   INTERP=$("$PATCHELF" --print-interpreter "$STAGE" 2>/dev/null || true)
   case "$INTERP" in
