@@ -47,7 +47,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.2.9 source. See [`shim/README.md`](shim/README.md). |
+| `shim/` | Pulse shim 0.2.10 source. See [`shim/README.md`](shim/README.md). The plugin ships the release named in `soloist_connect/alsa-lib/RELEASE`. |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |

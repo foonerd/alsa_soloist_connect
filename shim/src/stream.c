@@ -21,7 +21,7 @@ static void stream_clock_reset(pa_stream *s);
 static void stream_clock_freeze(pa_stream *s);
 static void stream_clock_hold(pa_stream *s);
 static void stream_clock_start(pa_stream *s);
-static pa_usec_t stream_hw_time(pa_stream *s);
+static int64_t stream_played_bytes(pa_stream *s);
 static void stream_set_state(pa_stream *s, pa_stream_state_t st);
 static int stream_open_pcm(pa_stream *s);
 static void stream_schedule_reopen(pa_stream *s);
@@ -191,6 +191,9 @@ stream_prepare(pa_stream *s)
 
     if (!s->pcm)
         return -1;
+    if (s->clock_running && !s->paused &&
+        snd_pcm_state(s->pcm) == SND_PCM_STATE_XRUN)
+        stream_played_bytes(s);
     stream_clock_freeze(s);
     if (snd_pcm_prepare(s->pcm) < 0) {
         shim_log("pcm prepare failed\n");
@@ -764,8 +767,8 @@ shim_stream_maybe_yield(pa_stream *s)
 static void
 stream_clock_reset(pa_stream *s)
 {
-    s->clock_frozen_usec = 0;
-    s->clock_last_played = 0;
+    s->clock_frozen_bytes = 0;
+    s->clock_last_played_bytes = 0;
     s->clock_running = 0;
 }
 
@@ -780,40 +783,35 @@ stream_clock_freeze(pa_stream *s)
 {
     if (!s->clock_running)
         return;
-    s->clock_frozen_usec = s->clock_last_played;
+    s->clock_frozen_bytes = s->clock_last_played_bytes;
     s->clock_running = 0;
 }
 
 static void
 stream_clock_hold(pa_stream *s)
 {
-    pa_usec_t held = s->clock_frozen_usec ? s->clock_frozen_usec
-                                          : s->clock_last_played;
-    int64_t bytes;
+    int64_t held = s->clock_frozen_bytes ? s->clock_frozen_bytes
+                                          : s->clock_last_played_bytes;
 
     stream_clock_reset(s);
-    s->clock_frozen_usec = held;
-    s->clock_last_played = held;
-    bytes = (int64_t)pa_usec_to_bytes(held, &s->ss);
-    if (bytes < 0)
-        bytes = 0;
-    s->timing.write_index = bytes;
-    s->timing.read_index = bytes;
+    s->clock_frozen_bytes = held;
+    s->clock_last_played_bytes = held;
+    s->timing.write_index = held;
+    s->timing.read_index = held;
 }
 
-static pa_usec_t
-stream_hw_time(pa_stream *s)
+static int64_t
+stream_played_bytes(pa_stream *s)
 {
     snd_pcm_sframes_t delay = 0;
     size_t fs, queued;
     int64_t played;
-    pa_usec_t usec;
 
     if (!s->clock_running)
-        return s->clock_frozen_usec;
+        return s->clock_frozen_bytes;
     fs = shim_frame_size(&s->ss);
     if (!fs || !s->ss.rate)
-        return s->clock_last_played;
+        return s->clock_last_played_bytes;
 
     queued = ring_readable(s->rb);
     if (s->pcm && snd_pcm_delay(s->pcm, &delay) == 0 && delay > 0)
@@ -822,25 +820,21 @@ stream_hw_time(pa_stream *s)
     played = s->timing.write_index - (int64_t)queued;
     if (played < 0)
         played = 0;
-    usec = (pa_usec_t)((uint64_t)played * 1000000ULL /
-                       (fs * (uint64_t)s->ss.rate));
-    if (usec < s->clock_last_played)
-        usec = s->clock_last_played;
-    s->clock_last_played = usec;
-    return usec;
+    if (played < s->clock_last_played_bytes)
+        played = s->clock_last_played_bytes;
+    s->clock_last_played_bytes = played;
+    return played;
 }
 
 void
 shim_stream_update_timing(pa_stream *s)
 {
-    pa_usec_t hw;
     int64_t played;
     size_t fs = shim_frame_size(&s->ss);
 
     shim_stream_maybe_yield(s);
     gettimeofday(&s->timing.timestamp, NULL);
-    hw = stream_hw_time(s);
-    played = (int64_t)pa_usec_to_bytes(hw, &s->ss);
+    played = stream_played_bytes(s);
     if (fs)
         played -= played % (int64_t)fs;
     if (s->timing.write_index > 0 && played < s->timing.read_index)

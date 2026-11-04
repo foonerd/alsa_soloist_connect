@@ -1,4 +1,4 @@
-# Pulse shim 0.2.9
+# Pulse shim 0.2.10
 
 Purpose-driven `libpulse.so.0` for Spotify Soloist on Volumio 4.
 
@@ -14,7 +14,7 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 
 ## Version
 
-CMake `VERSION` is 0.2.9. `SOVERSION` is 0 so the soname stays
+CMake `VERSION` is 0.2.10. `SOVERSION` is 0 so the soname stays
 `libpulse.so.0`. The source lives in this repository and `SOURCE_REVISION`
 is the git commit that produced each `.so`.
 
@@ -34,16 +34,39 @@ or one architecture:
 
 Output is installed into `soloist_connect/alsa-lib/<arch>/`.
 
+## Tests
+
+Regression tests are opt-in (`BUILD_TESTING=ON`). Normal library builds
+do not build test executables. To run the timing and lifecycle tests in
+a temporary directory without changing a payload:
+
+```sh
+docker run --rm --network none -v "$PWD:/src:ro" soloist-shim-builder:amd64 \
+  bash /src/scripts/check-shim.sh
+```
+
+The tests cover exact completion, queued ALSA and ring data, cork/uncork,
+flush, yield/reclaim, recovery, disconnect and 64-bit stream positions,
+using controlled ALSA responses without opening an audio device. CI runs
+them in the same container on every push, and the shim release workflow
+runs them for each architecture before it archives the library.
+
+GNU AddressSanitizer builds use non-PIE linking for the test executable;
+the shared library remains position-independent.
+
+Related: [issue #1: tracks never end outside Volumio](https://github.com/foonerd/alsa_soloist_connect/issues/1).
+
 ## Releases
 
 The shim has its own release line. A tag `shim-v<version>` on this
 repository runs `.github/workflows/shim-release.yml`: the three
 architectures are built from that commit in the same Debian 12 containers
-as above, each library passes the ldd gate, and one GitHub release carries
-`soloist-shim-<version>-<arch>.tar.gz` for `amd64`, `arm64` and `armhf`
-with their digests in `SHA256SUMS`. Each archive holds `libpulse.so.0` and
-`SOURCE_REVISION`. The tag must name the `VERSION` above and the heading of
-this file. A release is published as a pre-release and promoted by hand.
+as above, each library passes the ldd gate and the tests, and one GitHub
+release carries `soloist-shim-<version>-<arch>.tar.gz` for `amd64`, `arm64`
+and `armhf` with their digests in `SHA256SUMS`. Each archive holds
+`libpulse.so.0` and `SOURCE_REVISION`. The tag must name the `VERSION`
+above and the heading of this file. A release is published as a pre-release
+and promoted by hand.
 
 ```
 scripts/shim-release.sh archive amd64
@@ -63,6 +86,12 @@ this line; the verbs for that are in the repository README.
   S24_3LE is never the client format. Bit-perfect is not possible.
 - Played time is `write_index` minus ring fill minus `snd_pcm_delay` on
   the PCM we opened. `/proc/asound` is not scanned for some other card.
+- Played, frozen and held positions are counted in client bytes. Timing
+  indices do not round-trip through microseconds; a completely played
+  frame is reported exactly, including the final frame of a stream.
+- Active XRUN recovery snapshots played bytes before preparing the PCM
+  and freezing the clock. Ring-buffered data remains outstanding; paused
+  streams and other recovery states retain their held positions.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole
   buffer. Soloist always writes 32 KiB and will not uncork if that call
   fails, so rejecting a short write deadlocks preroll (0.2.1).
