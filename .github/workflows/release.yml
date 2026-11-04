@@ -1,0 +1,104 @@
+name: release
+
+# A tag builds the release: the checks on both Nodes, the shell lint, both
+# plugin zips, then one GitHub release carrying both zips with their digests
+# and the notes from the changelog. Run by hand it builds everything and
+# publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: node ${{ matrix.node }} check and tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [14, 20]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: The tag names the version both trees carry
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(node -p 'require("./soloist_connect/package.json").version')
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "the tag is $GITHUB_REF_NAME, soloist_connect/package.json carries $version" >&2; exit 1; }
+          buster=$(node -p 'require("./buster/plugin/package.json").version')
+          [ "$buster" = "$version" ] || { echo "buster/plugin/package.json carries $buster, not $version" >&2; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
+      - run: scripts/check.sh
+
+  shell:
+    name: shell lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # SC2034, an unused variable in the main tree's setup-glibc.sh, predates
+      # this lint; the main tree is not changed for a lint.
+      - run: shellcheck -S warning -e SC2034 soloist_connect/*.sh
+      - run: shellcheck -S warning buster/plugin/*.sh scripts/*.sh
+
+  package:
+    name: ${{ matrix.target }} zip
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bookworm, buster]
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/package.sh ${{ matrix.target }}
+      - name: The zip carries no modules, lockfile or nested zip
+        run: |
+          ! unzip -l dist/soloist_connect-*.zip | grep -E 'node_modules/|package-lock\.json|\.zip$'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plugin-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, shell, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: plugin-*
+          merge-multiple: true
+          path: dist
+      - name: Every asset's digest in SHA256SUMS
+        run: |
+          (cd dist && sha256sum soloist_connect-*.zip > SHA256SUMS && cat SHA256SUMS)
+      - name: Release notes from the changelog, with the sponsorship footer
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          scripts/release-notes.sh "$version" > dist/notes.md
+          [ -s dist/notes.md ] || echo "Spotify Soloist Connect $version" > dist/notes.md
+          printf '\n%s\n' "\`soloist_connect-$version.zip\` is the Volumio 4 plugin. \`soloist_connect-$version-buster.zip\` is the best effort Volumio 3 build, offered as-is and tested by the community; see buster/README.md in the repository." >> dist/notes.md
+          printf '\n' >> dist/notes.md
+          cat .github/release-footer.md >> dist/notes.md
+      # Published as a pre-release: no player is offered it, but one asked
+      # for it by version gets it. The Volumio 4 zip is made the latest by
+      # hand once it has been through the device checks
+      # (gh release edit <tag> --prerelease=false --latest).
+      - uses: softprops/action-gh-release@v3
+        with:
+          prerelease: true
+          body_path: dist/notes.md
+          files: |
+            dist/soloist_connect-*.zip
+            dist/SHA256SUMS

@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Two plugin trees come out of this repository: soloist_connect/ for the
+# Volumio 4 main line, and the same source with buster/plugin/ laid over it
+# for the best effort Volumio 3 build. The check runs on the Node each target
+# ships; the shell lint runs on the bare runner; package.sh zips each tree as
+# git holds it and refuses a tree that names the other target.
+jobs:
+  check:
+    name: node ${{ matrix.node }} check and tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [14, 20]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: scripts/check.sh
+
+  shell:
+    name: shell lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # SC2034, an unused variable in the main tree's setup-glibc.sh, predates
+      # this lint; the main tree is not changed for a lint.
+      - run: shellcheck -S warning -e SC2034 soloist_connect/*.sh
+      - run: shellcheck -S warning buster/plugin/*.sh scripts/*.sh
+
+  package:
+    name: ${{ matrix.target }} zip
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bookworm, buster]
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/package.sh ${{ matrix.target }}
+      - name: The zip carries no modules, lockfile or nested zip
+        run: |
+          ! unzip -l dist/soloist_connect-*.zip | grep -E 'node_modules/|package-lock\.json|\.zip$'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plugin-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
