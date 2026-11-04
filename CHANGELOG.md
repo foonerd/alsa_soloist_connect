@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.5] - 2026-11-04
+
+- **The Pulse shim ships from its own release line.** The library in `alsa-lib/` is release `shim-v0.2.9` of this repository, built by GitHub Actions from the same source and byte for byte the library shipped since 0.8.4. `alsa-lib/RELEASE` names the release and carries its digests, and every package is checked against it before it is published. Nothing changes on the player.
+
 ## [0.9.4] - 2026-11-04
 
 - **An update brings the plugin back on its own.** Volumio stops a plugin before updating it and never starts it again; a toggle from the UI ran the previous version from memory, and a manual update left the daemon down. The installer now schedules a restart of the Volumio backend eight seconds after an update of an enabled plugin, so the new version starts and Spotify Connect returns without a toggle or a reboot. A first install is unchanged.
