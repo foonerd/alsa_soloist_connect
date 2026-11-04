@@ -115,7 +115,7 @@ No PulseAudio daemon is installed, and nothing else on the system is changed.
 Spotify builds Soloist against a C library (glibc 2.38) newer than Buster's (2.28). At install, the plugin downloads a private copy of that library from the Debian package archive into `/data/soloist/sysroot` and rewrites the Soloist binary so that only Soloist uses it. The player's own C library, packages and apt are not touched, nothing is added to the system, and the player stays on Buster. Buster's apt has no `patchelf`, the tool that does the rewriting, so that tool is placed in the same private directory in the same way. Uninstalling removes the directory.
 
 Sample rate and quality shown in the Volumio UI are worked out on the device.
-Soloist does not report either, so the sample rate comes from the open ALSA stream and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
+Soloist does not report either, so the sample rate comes from the open ALSA stream, or from the stream parameters FusionDSP publishes when it is in the chain, and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
 A skip clears the previous tier. If the new file is not open yet, or is still filling, the line has no tier until the size settles or the bitrate is already lossless. The plugin does not read the playing cache file.
 
 ### Sharing the output with other sources

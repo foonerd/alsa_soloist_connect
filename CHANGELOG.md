@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.4] - 2026-11-04
+
+- **The sample rate with FusionDSP is the stream's own.** FusionDSP's ALSA hook publishes the parameters of the stream entering CamillaDSP; the plugin reads them while they are fresh instead of the `hw_params` below CamillaDSP, which showed CamillaDSP's output rate. Without FusionDSP, or with it disabled, nothing changes.
+
 ## [0.9.3] - 2026-11-04
 
 - **The API key leaves the daemon's command line at start.** The launcher preloads the audio shim, so the shim's two-second scrub runs when Soloist starts, whether or not anything has played. Before, the shim loaded only at the first sound, and a daemon that had not played yet still showed the key to `ps` and to a log upload. Reported, with the fix, by chrisp429.

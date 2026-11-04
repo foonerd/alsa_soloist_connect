@@ -1,6 +1,6 @@
 # Spotify Soloist Connect
 
-> **Cutting-edge, version 0.9.3.** The store package stays 0.9.1 until this build is accepted.
+> **Cutting-edge, version 0.9.4.** The store package stays 0.9.1 until this build is accepted.
 > This package tracks the cutting-edge line. An accepted build is published to the Volumio plugin store as a separate process.
 
 Turns a Volumio 4 device into a Spotify Connect endpoint using Spotify Soloist.
@@ -102,7 +102,7 @@ The plugin ships a private Pulse shim (`libpulse.so.0`) that implements the Puls
 No PulseAudio daemon is installed, and nothing else on the system is changed.
 
 Sample rate and quality shown in the Volumio UI are worked out on the device.
-Soloist does not report either, so the sample rate comes from the open ALSA stream and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
+Soloist does not report either, so the sample rate comes from the open ALSA stream, or from the stream parameters FusionDSP publishes when it is in the chain, and the quality tier is measured from the downloaded track: its size against its duration gives the bitrate, which maps onto Spotify's own tiers.
 A skip clears the previous tier. If the new file is not open yet, or is still filling, the line has no tier until the size settles or the bitrate is already lossless. The plugin does not read the playing cache file.
 
 ### Sharing the output with other sources
@@ -205,7 +205,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=0.9.3 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=0.9.4 shim=0.2.9 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

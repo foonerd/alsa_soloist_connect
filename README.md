@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Cutting-edge, version 0.9.3.** The store package stays 0.9.1 until this build is accepted.
+> **Cutting-edge, version 0.9.4.** The store package stays 0.9.1 until this build is accepted.
 > The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -296,7 +296,7 @@ Behaviour worth knowing when reading `index.js`:
 - `buffering` is mapped to the current status rather than to `pause`, so the state machine does not flap at every track start. In Connect mode `idle` is mapped the same way while playing: it is the gap between Spotify tracks, not a source stop, and publishing it as `stop` hit Volumio's end-of-block path, which starts the next queue item, while our own `stop()` paused Soloist. Nothing advanced. In queue mode that path is what we want, so `idle` after the row has started is stop.
 - Volume is mirrored both ways with a short collapse window, so a slider drag does not queue one `set_volume` per tick ahead of a skip.
 - **Queue mode is not volatile.** See [Queue mode](#queue-mode).
-- Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP enabled this reports CamillaDSP's output rate rather than the stream's; FusionDSP publishes the true stream parameters to `/tmp/fusiondsp_stream_params.log`, which this does not yet read.
+- Sample rate comes from ALSA `hw_params` on the open playback stream, since the Soloist WebSocket API does not report it. With FusionDSP in the chain, `hw_params` below CamillaDSP shows CamillaDSP's output rate, so the stream's own parameters are read from `/tmp/fusiondsp_stream_params.log` instead, which FusionDSP's ALSA hook writes at `hw_params` time as rate, format, channels and bits. The file counts only while it is fresh (15 s): an older one belongs to a previous stream, possibly another source's, and is ignored, which also covers a FusionDSP that is disabled and whose hook no longer fires.
 - The bit depth field carries the Spotify quality tier instead of a bit depth. See [Reporting the quality tier](#reporting-the-quality-tier).
 
 ---
