@@ -130,8 +130,8 @@ struct pa_stream {
     pa_usec_t configured_sink_usec;
     snd_pcm_format_t alsa_fmt;
     size_t alsa_fs;
-    pa_usec_t clock_frozen_usec;
-    pa_usec_t clock_last_played;
+    int64_t clock_frozen_bytes;
+    int64_t clock_last_played_bytes;
     int clock_running;
     pa_time_event *acquire_ev;
     int acquire_attempts;
