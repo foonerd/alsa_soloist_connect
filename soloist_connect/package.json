@@ -1,6 +1,6 @@
 {
   "name": "soloist_connect",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Spotify Connect on Volumio 4 via Spotify Soloist, playing through pcm.volumio (ALSA, no Pulse)",
   "main": "index.js",
   "scripts": {
@@ -19,8 +19,8 @@
     "os": [
       "bookworm"
     ],
-    "details": "Stable. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.9), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
-    "changelog": "0.9.5: The Pulse shim is taken from its own release, shim-v0.2.9, the same library as before; every package is checked against it. 0.9.4: With FusionDSP in the chain the sample rate shown is the stream's own, read from the parameters FusionDSP publishes, not CamillaDSP's output rate. 0.9.3: The API key leaves the daemon's command line about two seconds after start, whether or not anything has played."
+    "details": "Stable. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.10), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
+    "changelog": "0.9.6: The Pulse shim is 0.2.10: played positions are kept in bytes, so a track's last frame is reported exactly and the next track starts on its own; underrun recovery no longer holds a stale position. 0.9.5: The Pulse shim is taken from its own release, shim-v0.2.9, the same library as before; every package is checked against it. 0.9.4: With FusionDSP in the chain the sample rate shown is the stream's own, read from the parameters FusionDSP publishes, not CamillaDSP's output rate."
   },
   "engines": {
     "node": ">=20",

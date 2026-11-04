@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.6] - 2026-11-04
+
+- **A track's end is reported exactly, so the next track starts on its own.** The Pulse shim moves to 0.2.10, release `shim-v0.2.10`. Played, frozen and held positions are kept in client bytes instead of passing through microseconds and back, which left the read index one frame short of the write index at the end of every stream; the daemon now sees its end-of-stream played out. Active underrun recovery takes its snapshot of played bytes before preparing the PCM and freezing the clock, so it no longer holds a stale position. With Soloist started by hand outside Volumio, a track could sit at its end forever and never advance; reported with a patch by ludoo on piCorePlayer and confirmed on moOde by felipec84 in issue 1. The shim's regression tests run in CI on every push and before every shim release.
+
 ## [0.9.5] - 2026-11-04
 
 - **The Pulse shim ships from its own release line.** The library in `alsa-lib/` is release `shim-v0.2.9` of this repository, built by GitHub Actions from the same source and byte for byte the library shipped since 0.8.4. `alsa-lib/RELEASE` names the release and carries its digests, and every package is checked against it before it is published. Nothing changes on the player.
