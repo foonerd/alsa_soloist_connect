@@ -59,7 +59,7 @@ jobs:
       - run: scripts/package.sh ${{ matrix.target }}
       - name: The zip carries no modules, lockfile or nested zip
         run: |
-          ! unzip -l dist/soloist_connect-*.zip | grep -E 'node_modules/|package-lock\.json|\.zip$'
+          unzip -Z1 dist/soloist_connect-*.zip | tee /dev/stderr | ( ! grep -E 'node_modules/|package-lock\.json|\.zip$' )
       - uses: actions/upload-artifact@v7
         with:
           name: plugin-${{ matrix.target }}

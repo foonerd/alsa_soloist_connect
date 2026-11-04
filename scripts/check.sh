@@ -43,6 +43,13 @@ for f in soloist_connect/index.js soloist_connect/test/*.js; do
 done
 
 echo "check: tests"
+# The suite loads index.js, which needs the runtime dependencies. They are
+# installed here for the test run only, into the gitignored node_modules of
+# the working tree; nothing of this reaches a zip. --production is the
+# spelling npm 6 (Node 14) and npm 10 (Node 20) both accept.
+if [ ! -d soloist_connect/node_modules/kew ]; then
+  ( cd soloist_connect && npm install --production --no-audit --no-fund --loglevel=error >/dev/null )
+fi
 ( cd soloist_connect && node test/queue-mode.test.js | grep -v '^PASS ' )
 
 echo "check: buster overlay against its base"
