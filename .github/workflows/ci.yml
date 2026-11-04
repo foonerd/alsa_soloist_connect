@@ -51,7 +51,8 @@ jobs:
         target: [bookworm, buster]
     steps:
       - uses: actions/checkout@v7
-      - run: scripts/package.sh ${{ matrix.target }}
+      - run: scripts/shim-release.sh fetch dist/shim
+      - run: scripts/package.sh ${{ matrix.target }} --shim dist/shim
       - name: The zip carries no modules, lockfile or nested zip
         run: |
           unzip -Z1 dist/soloist_connect-*.zip | tee /dev/stderr | ( ! grep -E 'node_modules/|package-lock\.json|\.zip$' )

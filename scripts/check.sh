@@ -1,9 +1,10 @@
 #!/bin/bash
 # The workshop pass CI runs on the Node of each target: every script parses,
 # every JSON file parses, every JavaScript file parses, the test suite passes,
-# the two package.json files carry the same version and changelog line, and
-# the buster overlay is compared with the main files it was taken from so
-# drift is visible. Run it before a commit:
+# the two package.json files carry the same version and changelog line, the
+# alsa-lib payload is the pinned shim release, and the buster overlay is
+# compared with the main files it was taken from so drift is visible. Run it
+# before a commit:
 #
 #   scripts/check.sh
 set -euo pipefail
@@ -36,6 +37,11 @@ if [ "$(field "$ROOT/soloist_connect/package.json" .volumio_info.changelog)" != 
   exit 1
 fi
 echo "  both $MAIN_VERSION"
+
+# Fatal: the committed payload is the shim release the pin names, by digest,
+# and both SOURCE.md files state its version.
+echo "check: shim release pin"
+scripts/shim-release.sh verify
 
 echo "check: javascript"
 for f in soloist_connect/index.js soloist_connect/test/*.js; do

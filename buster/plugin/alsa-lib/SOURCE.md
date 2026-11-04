@@ -5,8 +5,9 @@ implements the 47 `pa_*` symbols that binary looks up (see `shim/ABI.txt`)
 and writes FLOAT32 into `plug:volumio`. The outer plug converts to the
 slave. It is not apulse and not a Pulse server.
 
-Library version is **0.2.9** (`shim/CMakeLists.txt`). There is no tag pin:
-the source is `shim/` in this repository.
+Library version is **0.2.9** (`shim/CMakeLists.txt`). The source is `shim/`
+in this repository; the payload here is one of its published releases,
+named in `RELEASE` next to this file.
 
 ## Layout
 
@@ -23,6 +24,9 @@ That list is the payload manifest in `docker/run-docker-shim.sh`.
 `libpulse-simple.so.0` and `libpulse-mainloop-glib.so.0` are not shipped:
 Soloist does not load them.
 
+`RELEASE` is the pin: the release tag on its first line, then the digest of
+each of that release's archives and of each file listed above.
+
 ## Build
 
 ```
@@ -37,5 +41,8 @@ Single arch:
 
 The container is Debian 12; the shim links `libasound` and libc only and
 loads into the sideloaded glibc on the player. `SOURCE_REVISION` is the git
-HEAD of this repository that produced the `.so`. Rebuild the matrix after
-committing shim sources so that file names the commit, not an earlier HEAD.
+commit of this repository that produced the `.so`. The committed payload is
+a published release, placed here by `scripts/shim-release.sh pin <tag>`,
+which also writes `RELEASE`; a workstation build that installs here is for
+development, and the tree is pinned to a release again before it is
+committed.

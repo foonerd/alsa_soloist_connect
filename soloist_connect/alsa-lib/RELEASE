@@ -1,0 +1,10 @@
+shim-v0.2.9
+07ffcf6bf54af577687ea37a413ef946b2a126a4a00668ed0fcd0f29dfa69f74  soloist-shim-0.2.9-amd64.tar.gz
+5f8a600ff4aef5cfacab50607d4ebb1c3b916b9cc5befa1615b6e0b1a2db4921  soloist-shim-0.2.9-arm64.tar.gz
+4f03e771ab648a490088443857b1c1d1a22190f9d34bd452c96da0b563efe618  soloist-shim-0.2.9-armhf.tar.gz
+f8030c7c83e64a07e88a45d2e3e417f6f48932860281b9f8db5ee06f16249686  amd64/libpulse.so.0
+cca13e4845fddd5b6ea1d58268c56f4dd225b0b697e689dd2cf2b63bbce9a48e  amd64/SOURCE_REVISION
+d2cc0ae4ac17154a9f79b0918b46b749a8dde193aadbd0cddf927a5b00f8a98c  arm64/libpulse.so.0
+cca13e4845fddd5b6ea1d58268c56f4dd225b0b697e689dd2cf2b63bbce9a48e  arm64/SOURCE_REVISION
+407f791aa8933ce9692a7a6566952b6aad70aca69878341c32b968629bab956e  armhf/libpulse.so.0
+cca13e4845fddd5b6ea1d58268c56f4dd225b0b697e689dd2cf2b63bbce9a48e  armhf/SOURCE_REVISION

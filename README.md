@@ -54,7 +54,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `soloist_connect/index.js` | Plugin controller: daemon lifecycle, WebSocket client, state mapping, queue mode, browse tile. |
 | `soloist_connect/assets/` | Browse-tile sourceicon (`spotify.svg`). |
 | `soloist_connect/test/` | Queue-mode and browse harness. No daemon, no ALSA. `npm test` from `soloist_connect/`. |
-| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`, built by the Docker matrix. |
+| `soloist_connect/alsa-lib/{amd64,arm64,armhf}/` | Shipped `libpulse.so.0`: the shim release named in `soloist_connect/alsa-lib/RELEASE`, moved by `scripts/shim-release.sh pin`. |
 | `soloist_connect/*.sh` | Arch detection, CDN download, glibc sideload, ELF patch, launcher, install, uninstall. |
 | `docker/Dockerfile.shim.{amd64,arm64,armhf}` | Bookworm build images. `libasound2-dev` and a toolchain, nothing else. |
 | `docker/run-docker-shim.sh` | Live builder. Compiles `shim/` in a Bookworm container. |
@@ -109,8 +109,8 @@ The build installs its output into `soloist_connect/alsa-lib/<arch>/` and compar
 A mismatch or a missing file fails the build.
 There is no manual copy step, deliberately: when there was one, a stale shim shipped while the build log looked correct.
 
-The git HEAD that produced each shipped payload is recorded in `soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`.
-Rebuild the matrix after committing shim sources so that file names the commit.
+The git commit that produced each payload is recorded in `soloist_connect/alsa-lib/<arch>/SOURCE_REVISION`.
+The committed payload is the pinned shim release, described under [Shim releases](#shim-releases); a workstation build that installs into the tree is for development, and `scripts/check.sh` fails until the tree is pinned to a release again, so a hand-built library never reaches a zip.
 
 ### The ldd gate
 
@@ -138,6 +138,10 @@ The release is published as a pre-release and promoted by hand; run from the Act
 | `fetch [dir]` | Downloads the archives the pin names into `dir` (`dist/shim`), checks them against the pin and unpacks them. `scripts/package.sh <target> --shim dir` then refuses a zip whose payload is not that release byte for byte. |
 | `verify [dir]` | The payload in `dir` (`soloist_connect/alsa-lib`) against the pin, and both `alsa-lib/SOURCE.md` files state the pinned version. |
 
+The plugin tree carries one release of this line.
+`soloist_connect/alsa-lib/RELEASE` names it and holds the digests of its three archives and of the six payload files.
+`scripts/check.sh` verifies the committed payload against the pin on every push; `ci.yml` and `release.yml` fetch that release and package with `--shim`, so a zip never carries a library that is not a published shim release.
+Moving the plugin to a new shim is one command, `scripts/shim-release.sh pin shim-v<version>`, then the version where the documentation states it, committed together.
 The shim version is stated by hand where the documentation names it, as the plugin version is; `verify` makes a mismatch fatal.
 A fork reads its own releases with `SHIM_RELEASE_REPO=<owner>/<repo>`; `SHIM_RELEASE_BASE` points `pin` and `fetch` at a mirror.
 
@@ -258,7 +262,7 @@ A tag `v<version>` on `main` runs `release.yml`: the checks on Node 14 and Node 
 | `soloist_connect-<version>.zip` | Volumio 4, the main line, `soloist_connect/` as git holds it |
 | `soloist_connect-<version>-buster.zip` | Volumio 3, best effort, `soloist_connect/` with `buster/plugin/` laid over it; see [buster/README.md](buster/README.md) |
 
-Each zip is the plugin tree as committed and nothing else: no `node_modules`, no lockfile, no build metadata. A player installs the dependencies itself through `volumio plugin install`, as it does for the git and zip paths above. `scripts/package.sh [bookworm|buster]` builds the same zip on a workstation from the committed tree. It refuses to build when the two `package.json` versions differ, and it refuses a tree that names the other target: the main zip may not say Volumio 3 or buster anywhere, the buster zip may not say Volumio 4 or bookworm. The store's own `submit` accepts only the submitting device's codename in `volumio_info.os`, so that separation is a store rule. The pre-release is made the latest by hand once the main-line zip has been through the device checks. Store submission is a separate process from a player, as before.
+Each zip is the plugin tree as committed and nothing else: no `node_modules`, no lockfile, no build metadata. A player installs the dependencies itself through `volumio plugin install`, as it does for the git and zip paths above. `scripts/package.sh [bookworm|buster]` builds the same zip on a workstation from the committed tree. It refuses to build when the two `package.json` versions differ, and it refuses a tree that names the other target: the main zip may not say Volumio 3 or buster anywhere, the buster zip may not say Volumio 4 or bookworm. The store's own `submit` accepts only the submitting device's codename in `volumio_info.os`, so that separation is a store rule. The release is created as a draft; once the main-line zip has been through the device checks it is published by hand, as a pre-release or as the latest. Store submission is a separate process from a player, as before.
 
 ## Architecture detection
 
