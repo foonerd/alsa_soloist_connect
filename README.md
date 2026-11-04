@@ -62,7 +62,8 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `build-matrix.sh` | Builds all three architectures. |
 | `buster/` | The best effort Volumio 3 (buster) build: whole files laid over `soloist_connect/` at packaging time, and its own README. Neither build mentions the other; the versions are lock step. |
 | `scripts/package.sh`, `scripts/check.sh`, `scripts/release-notes.sh` | The release train: assemble a zip per target, the workshop pass CI runs, the notes from `CHANGELOG.md`. |
-| `.github/workflows/` | `ci.yml` on every push, `release.yml` on a `v*` tag. |
+| `scripts/shim-release.sh` | The shim release line: archive a build, pin a release into the plugin tree, fetch and verify the pinned one. See [Shim releases](#shim-releases). |
+| `.github/workflows/` | `ci.yml` on every push, `release.yml` on a `v*` tag, `shim-release.yml` on a `shim-v*` tag. |
 | `THIRD-PARTY-NOTICES.md` | Full attribution for everything this project aggregates. |
 
 `out/` is build output and is not committed.
@@ -118,6 +119,27 @@ Allowed runtime dependencies are the loader, the libc family and `libasound.so.2
 The authority for that list is `volumio-os/recipes/base/VolumioBase.conf`, which has `libasound2`.
 
 The build images carry `libasound2-dev` and a toolchain, and nothing else. glib and pcre2 were apulse's dependencies and are deliberately absent, so a reintroduced dependency fails at compile time rather than being caught by the gate afterwards.
+
+### Shim releases
+
+The shim has its own release line, separate from the plugin's. A tag `shim-v<version>` runs [`shim-release.yml`](.github/workflows/shim-release.yml): the three architectures are built from that commit by `docker/run-docker-shim.sh` on GitHub's runners, the ARM containers under QEMU as on a workstation, each library passes the ldd gate, the regression tests run in the same container where the source carries them, and one GitHub release carries `soloist-shim-<version>-<arch>.tar.gz` for `amd64`, `arm64` and `armhf` with their digests in `SHA256SUMS`.
+Each archive holds `libpulse.so.0` and `SOURCE_REVISION`.
+The tag must name the `VERSION` in `shim/CMakeLists.txt` and the heading of `shim/README.md`.
+The release is published as a pre-release and promoted by hand; run from the Actions tab, the workflow builds everything and publishes nothing.
+`ci.yml` compiles the amd64 library on every push and pull request, so a change under `shim/` is built before it is tagged.
+
+`scripts/shim-release.sh` is the tool around that line:
+
+| Verb | What |
+|---|---|
+| `version` | The shim version, from `shim/CMakeLists.txt`. |
+| `archive <arch>` | `out/<arch>/` as the Docker build leaves it, into `dist/soloist-shim-<version>-<arch>.tar.gz`. Reproducible: sorted entries, owner 0:0, the commit time as mtime, gzip without a name or timestamp. Refuses a build that is not of HEAD or a `shim/` with uncommitted changes. |
+| `pin <tag>` | Downloads that release's archives, checks them against its `SHA256SUMS`, unpacks them into `soloist_connect/alsa-lib/<arch>/` and writes `soloist_connect/alsa-lib/RELEASE`: the tag on the first line, then the digest of each archive and of each unpacked file. |
+| `fetch [dir]` | Downloads the archives the pin names into `dir` (`dist/shim`), checks them against the pin and unpacks them. `scripts/package.sh <target> --shim dir` then refuses a zip whose payload is not that release byte for byte. |
+| `verify [dir]` | The payload in `dir` (`soloist_connect/alsa-lib`) against the pin, and both `alsa-lib/SOURCE.md` files state the pinned version. |
+
+The shim version is stated by hand where the documentation names it, as the plugin version is; `verify` makes a mismatch fatal.
+A fork reads its own releases with `SHIM_RELEASE_REPO=<owner>/<repo>`; `SHIM_RELEASE_BASE` points `pin` and `fetch` at a mirror.
 
 ---
 

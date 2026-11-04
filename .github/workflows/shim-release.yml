@@ -1,0 +1,93 @@
+name: shim release
+
+# A shim-v* tag builds the Pulse shim for the three architectures in the
+# same Debian 12 containers the workstation uses, gates each library on its
+# runtime links, runs the regression tests where the source carries them,
+# archives each payload and publishes one GitHub release carrying the three
+# archives with their digests. Run by hand it builds everything and
+# publishes nothing. The plugin's own release train is release.yml; it
+# takes its shim from one of these releases.
+on:
+  push:
+    tags: ["shim-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} library
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armhf
+            platform: linux/arm/v7
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag names the version the source carries
+        if: startsWith(github.ref, 'refs/tags/shim-v')
+        run: |
+          version=$(scripts/shim-release.sh version)
+          [ "$GITHUB_REF_NAME" = "shim-v$version" ] || { echo "the tag is $GITHUB_REF_NAME, shim/CMakeLists.txt carries $version" >&2; exit 1; }
+          grep -q "^# Pulse shim $version\$" shim/README.md || { echo "shim/README.md is not headed 'Pulse shim $version'" >&2; exit 1; }
+      # The ARM containers run under QEMU, as they do on the workstation.
+      - uses: docker/setup-qemu-action@v4
+        if: matrix.arch != 'amd64'
+      - run: docker/run-docker-shim.sh ${{ matrix.arch }}
+      # The regression tests ship with the source from the fix for issue 1;
+      # they run in the image the build just made, against a read-only tree.
+      - name: The regression tests, in the same container
+        if: hashFiles('scripts/check-shim.sh') != ''
+        run: |
+          docker run --rm --network none --platform ${{ matrix.platform }} \
+            -v "$PWD:/src:ro" soloist-shim-builder:${{ matrix.arch }} \
+            bash /src/scripts/check-shim.sh
+      - run: scripts/shim-release.sh archive ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shim-${{ matrix.arch }}
+          path: dist/soloist-shim-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    if: startsWith(github.ref, 'refs/tags/shim-v')
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shim-*
+          merge-multiple: true
+          path: dist
+      - name: Every asset's digest in SHA256SUMS
+        run: |
+          (cd dist && sha256sum soloist-shim-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
+      - name: Release notes
+        run: |
+          version="${GITHUB_REF_NAME#shim-v}"
+          {
+            printf 'Pulse shim %s: `libpulse.so.0` for Spotify Soloist, built from `shim/` at %s in Debian 12 containers. Runtime link is `libasound` and libc only.\n\n' "$version" "$(git rev-parse HEAD)"
+            printf 'One archive per userspace, each holding `libpulse.so.0` and `SOURCE_REVISION`: `amd64` (x86_64), `arm64` (aarch64), `armhf` (armv7l). `SHA256SUMS` carries their digests. The plugin takes its shim from a release of this line; see `shim/README.md`.\n'
+            cat .github/release-footer.md
+          } > dist/notes.md
+      # Published as a pre-release, as the plugin is: promoted by hand once
+      # it has been through the device checks
+      # (gh release edit <tag> --prerelease=false).
+      - uses: softprops/action-gh-release@v3
+        with:
+          prerelease: true
+          body_path: dist/notes.md
+          files: |
+            dist/soloist-shim-*.tar.gz
+            dist/SHA256SUMS

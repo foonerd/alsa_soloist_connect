@@ -12,7 +12,9 @@ permissions:
 # Volumio 4 main line, and the same source with buster/plugin/ laid over it
 # for the best effort Volumio 3 build. The check runs on the Node each target
 # ships; the shell lint runs on the bare runner; package.sh zips each tree as
-# git holds it and refuses a tree that names the other target.
+# git holds it and refuses a tree that names the other target. The shim is
+# compiled for amd64 in its Debian 12 container so a change under shim/ is
+# built before it is tagged; the three architectures are shim-release.yml's.
 jobs:
   check:
     name: node ${{ matrix.node }} check and tests
@@ -58,3 +60,16 @@ jobs:
           name: plugin-${{ matrix.target }}
           path: dist/*.zip
           if-no-files-found: error
+
+  shim:
+    name: shim amd64 library
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker/run-docker-shim.sh amd64
+      - name: The regression tests, in the same container
+        if: hashFiles('scripts/check-shim.sh') != ''
+        run: |
+          docker run --rm --network none -v "$PWD:/src:ro" soloist-shim-builder:amd64 \
+            bash /src/scripts/check-shim.sh
+      - run: scripts/shim-release.sh archive amd64

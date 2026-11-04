@@ -15,8 +15,8 @@ Runtime link is `libasound` and libc only. `libpulse-simple` and
 ## Version
 
 CMake `VERSION` is 0.2.9. `SOVERSION` is 0 so the soname stays
-`libpulse.so.0`. There is no tag pin: the source lives in this repository
-and `SOURCE_REVISION` is the git HEAD that produced each shipped `.so`.
+`libpulse.so.0`. The source lives in this repository and `SOURCE_REVISION`
+is the git commit that produced each `.so`.
 
 ## Build
 
@@ -33,6 +33,25 @@ or one architecture:
 ```
 
 Output is installed into `soloist_connect/alsa-lib/<arch>/`.
+
+## Releases
+
+The shim has its own release line. A tag `shim-v<version>` on this
+repository runs `.github/workflows/shim-release.yml`: the three
+architectures are built from that commit in the same Debian 12 containers
+as above, each library passes the ldd gate, and one GitHub release carries
+`soloist-shim-<version>-<arch>.tar.gz` for `amd64`, `arm64` and `armhf`
+with their digests in `SHA256SUMS`. Each archive holds `libpulse.so.0` and
+`SOURCE_REVISION`. The tag must name the `VERSION` above and the heading of
+this file. A release is published as a pre-release and promoted by hand.
+
+```
+scripts/shim-release.sh archive amd64
+```
+
+writes the same archive from `out/amd64/` after a workstation build, for a
+commit with a clean `shim/`. The plugin takes its payload from a release of
+this line; the verbs for that are in the repository README.
 
 ## Playback contract
 

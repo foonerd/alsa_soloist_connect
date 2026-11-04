@@ -1,12 +1,18 @@
 #!/bin/bash
 # Assemble a plugin zip: the plugin tree as it is in git, nothing added.
 #
-#   scripts/package.sh [bookworm|buster]
+#   scripts/package.sh [bookworm|buster] [--shim <dir>]
 #
 # bookworm, the default: soloist_connect/ as it is, the Volumio 4 main line.
 # buster: soloist_connect/ with buster/plugin/ laid over it, the best effort
 # Volumio 3 build. The two package.json files carry the version and the
 # changelog line by hand, in lock step; a mismatch stops the build here.
+#
+# --shim <dir>: the shim payload fetched from the release the pin names,
+# by scripts/shim-release.sh fetch <dir>. The alsa-lib payload in the tree
+# being zipped must be that release byte for byte; the pin and the committed
+# payload move together (scripts/shim-release.sh pin). CI passes this so a
+# zip never carries a library that is not a published shim release.
 #
 # The zip holds exactly what `volumio plugin install` consumes on a player:
 # the plugin folder with package.json at its root. No node_modules, no
@@ -23,13 +29,25 @@
 set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-TARGET=${1:-bookworm}
 NAME=soloist_connect
+TARGET=bookworm
+SHIM_DIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    bookworm|buster) TARGET=$1 ;;
+    --shim)
+      [ $# -ge 2 ] || { echo "package: --shim needs a directory" >&2; exit 2; }
+      SHIM_DIR=$2
+      shift
+      ;;
+    *) echo "package: unknown argument '$1' (bookworm or buster, --shim <dir>)" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 case "$TARGET" in
   bookworm) SUFFIX="" ;;
   buster) SUFFIX="-buster" ;;
-  *) echo "package: unknown target '$TARGET' (bookworm or buster)" >&2; exit 2 ;;
 esac
 
 field() { node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))$2" "$1"; }
@@ -58,6 +76,27 @@ if [ "$TARGET" = buster ]; then
   fi
   tar -C "$OVERLAY" -cf - . | tar -C "$STAGE" -xf -
   rm -rf "$ROOT/dist/stage/buster"
+fi
+
+# The shim payload in the tree is the release the pin names, byte for byte.
+if [ -n "$SHIM_DIR" ]; then
+  if [ ! -f "$STAGE/alsa-lib/RELEASE" ]; then
+    echo "package: the committed tree has no alsa-lib/RELEASE; scripts/shim-release.sh pin <tag> writes it, and it is committed with the payload" >&2
+    exit 1
+  fi
+  for arch in amd64 arm64 armhf; do
+    for f in libpulse.so.0 SOURCE_REVISION; do
+      if [ ! -f "$SHIM_DIR/$arch/$f" ]; then
+        echo "package: $SHIM_DIR/$arch/$f is missing; scripts/shim-release.sh fetch $SHIM_DIR fetches the pinned release" >&2
+        exit 1
+      fi
+      if ! cmp -s "$SHIM_DIR/$arch/$f" "$STAGE/alsa-lib/$arch/$f"; then
+        echo "package: alsa-lib/$arch/$f as committed is not the shim release the pin names; scripts/shim-release.sh pin <tag> moves both together" >&2
+        exit 1
+      fi
+    done
+  done
+  echo "package: alsa-lib payload is shim release $(head -n 1 "$STAGE/alsa-lib/RELEASE")"
 fi
 
 # The other target's name must not appear anywhere in this tree.
