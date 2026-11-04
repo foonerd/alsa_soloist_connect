@@ -167,6 +167,9 @@ Volumio 3 (Debian Buster base, Node 14) is required.
 
 ## Things to know
 
+**Updating the plugin restarts Volumio's backend.**
+Volumio does not start a plugin again after updating it, so the installer schedules a restart of the Volumio service eight seconds after an update of an enabled plugin. The web UI reconnects within about half a minute and Spotify Connect comes back on the new version without a toggle or a reboot. A first install does not restart anything.
+
 **Disabling the plugin stops the Soloist daemon.**
 It is then not a Spotify Connect endpoint. Pause and Volumio Stop do not stop the service; that is so resume stays instant.
 

@@ -4,6 +4,7 @@ All notable changes to Spotify Soloist Connect are recorded here. The format fol
 
 ## [0.9.4] - 2026-11-04
 
+- **An update brings the plugin back on its own.** Volumio stops a plugin before updating it and never starts it again; a toggle from the UI ran the previous version from memory, and a manual update left the daemon down. The installer now schedules a restart of the Volumio backend eight seconds after an update of an enabled plugin, so the new version starts and Spotify Connect returns without a toggle or a reboot. A first install is unchanged.
 - **The sample rate with FusionDSP is the stream's own.** FusionDSP's ALSA hook publishes the parameters of the stream entering CamillaDSP; the plugin reads them while they are fresh instead of the `hw_params` below CamillaDSP, which showed CamillaDSP's output rate. Without FusionDSP, or with it disabled, nothing changes.
 
 ## [0.9.3] - 2026-11-04
