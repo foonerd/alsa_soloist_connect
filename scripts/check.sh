@@ -52,6 +52,9 @@ if [ ! -d soloist_connect/node_modules/kew ]; then
 fi
 ( cd soloist_connect && node test/queue-mode.test.js | grep -v '^PASS ' )
 
+# Reported, never fatal: the buster files are reconciled by hand, best effort,
+# and buster/BASE is moved to the main commit they were reconciled with. The
+# version and the changelog line are the lock step, checked above.
 echo "check: buster overlay against its base"
 BASE=$(tr -d '[:space:]' < buster/BASE)
 if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
@@ -59,11 +62,13 @@ if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
   while IFS= read -r f; do
     [ -e "soloist_connect/$f" ] || continue
     if ! git diff --quiet "$BASE" HEAD -- "soloist_connect/$f"; then
-      echo "  soloist_connect/$f changed since $BASE; reconcile buster/plugin/$f"
+      echo "  DRIFT: soloist_connect/$f changed since ${BASE:0:7}; reconcile buster/plugin/$f, then move buster/BASE"
       drift=1
     fi
   done < <(cd buster/plugin && find . -type f | sed 's|^\./||')
-  [ "$drift" = 0 ] && echo "  no drift"
+  if [ "$drift" = 0 ]; then
+    echo "  no drift since ${BASE:0:7}"
+  fi
 else
   echo "  base $BASE is not in this clone; skipped"
 fi
