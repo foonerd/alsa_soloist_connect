@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Cutting-edge, version 0.9.2.** The store package stays 0.9.1 until this build is accepted.
+> **Cutting-edge, version 0.9.3.** The store package stays 0.9.1 until this build is accepted.
 > The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -60,6 +60,9 @@ PulseAudio is never installed, and the system glibc is never modified.
 | `docker/run-docker-shim.sh` | Live builder. Compiles `shim/` in a Bookworm container. |
 | `scripts/build-shim.sh` | Runs inside the container. |
 | `build-matrix.sh` | Builds all three architectures. |
+| `buster/` | The best effort Volumio 3 (buster) build: whole files laid over `soloist_connect/` at packaging time, and its own README. Neither build mentions the other; the versions are lock step. |
+| `scripts/package.sh`, `scripts/check.sh`, `scripts/release-notes.sh` | The release train: assemble a zip per target, the workshop pass CI runs, the notes from `CHANGELOG.md`. |
+| `.github/workflows/` | `ci.yml` on every push, `release.yml` on a `v*` tag. |
 | `THIRD-PARTY-NOTICES.md` | Full attribution for everything this project aggregates. |
 
 `out/` is build output and is not committed.
@@ -222,6 +225,17 @@ Notable points:
 - Sudoers rules are named `volumio-user-soloist_connect` so they are included after `/etc/sudoers.d/volumio-user`, matching the convention in `volumio-plugins-sources-bookworm`.
 
 ---
+
+### Release zips
+
+A tag `v<version>` on `main` runs `release.yml`: the checks on Node 14 and Node 20, the shell lint, then two zips, published as a pre-release with `SHA256SUMS` and the notes from `CHANGELOG.md`.
+
+| Asset | Target |
+| --- | --- |
+| `soloist_connect-<version>.zip` | Volumio 4, the main line, `soloist_connect/` as git holds it |
+| `soloist_connect-<version>-buster.zip` | Volumio 3, best effort, `soloist_connect/` with `buster/plugin/` laid over it; see [buster/README.md](buster/README.md) |
+
+Each zip is the plugin tree as committed and nothing else: no `node_modules`, no lockfile, no build metadata. A player installs the dependencies itself through `volumio plugin install`, as it does for the git and zip paths above. `scripts/package.sh [bookworm|buster]` builds the same zip on a workstation from the committed tree. It refuses to build when the two `package.json` versions differ, and it refuses a tree that names the other target: the main zip may not say Volumio 3 or buster anywhere, the buster zip may not say Volumio 4 or bookworm. The store's own `submit` accepts only the submitting device's codename in `volumio_info.os`, so that separation is a store rule. The pre-release is made the latest by hand once the main-line zip has been through the device checks. Store submission is a separate process from a player, as before.
 
 ## Architecture detection
 

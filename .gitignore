@@ -7,8 +7,9 @@ build/
 node_modules/
 package-lock.json
 
-# Packaged plugin archives
+# Packaged plugin archives, and scripts/package.sh's output directory
 *.zip
+dist/
 
 # The Soloist binary is proprietary Spotify software and is downloaded from
 # Spotify's CDN at install time. It must never be committed or packaged.
