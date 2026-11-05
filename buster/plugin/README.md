@@ -221,7 +221,7 @@ journalctl -u volumio -f | grep -i soloist
 Turn on **Verbose logging** first when investigating playback problems. Without it the audio shim is silent about what it does when ALSA reports a fault, and the log shows the symptom with nothing on either side of it. The startup line is always printed. It names the plugin, the shim, and which mode it is in:
 
 ```
-SoloistConnect: plugin=<version> shim=0.2.10 rev=... userspace=armhf device=plug:volumio ... diag=1
+SoloistConnect: plugin=<version> shim=0.2.11 rev=... userspace=armhf device=plug:volumio ... diag=1
 ```
 
 The journal on Volumio is held in memory and is destroyed by a reboot. Capture it before restarting:

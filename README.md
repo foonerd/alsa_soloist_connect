@@ -7,7 +7,7 @@ There is no PulseAudio daemon and no PipeWire on the device.
 
 This repository holds the plugin and the in-tree Pulse shim. Cutting-edge work and bugfixes stay here. An accepted build is published to the Volumio plugin store as a separate process.
 
-> **Cutting-edge, version 0.9.6.** The store package stays 0.9.1 until this build is accepted.
+> **Cutting-edge, version 0.9.7.** The store package stays 0.9.1 until this build is accepted.
 > The store package, when published, is a separately accepted build.
 
 > **Unofficial project.**
@@ -26,12 +26,12 @@ Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAu
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
 The library implements the 48 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. The outer `plug:` converts; the shim does not pick S16/S32.
 
-It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.10**, release `shim-v0.2.10`: the source is this repository, the plugin tree carries the release named in `soloist_connect/alsa-lib/RELEASE`, and `SOURCE_REVISION` is the git commit that produced each shipped `.so`.
+It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.11**, release `shim-v0.2.11`: the source is this repository, the plugin tree carries the release named in `soloist_connect/alsa-lib/RELEASE`, and `SOURCE_REVISION` is the git commit that produced each shipped `.so`.
 
 ```mermaid
 flowchart LR
     SpotifyApp["Spotify app"] -->|"Spotify Connect"| Soloist["soloist daemon"]
-    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.10"]
+    Soloist -->|"dlopen libpulse.so.0"| Shim["shim 0.2.11"]
     Shim -->|"FLOAT32 writei"| Plug["plug:volumio"]
     Plug --> Switch["volumioswitch"]
     Switch --> Out["softvolume or plug"]

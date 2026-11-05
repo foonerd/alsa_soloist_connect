@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.7] - 2026-11-05
+
+- **Playback no longer stalls when Soloist stops supplying audio mid-track.** The Pulse shim moves to 0.2.11, release `shim-v0.2.11`. When the daemon stops writing for long enough that the card runs dry, the shim now tells it so, once, the way a PulseAudio server would, and the daemon rebuffers and resumes; before, the daemon was told its audio had all played and never told it had run out, and it waited forever with the card stopped. A card underrun is recovered and logged where it used to be absorbed in silence. Reported on piCorePlayer by ludoo in issue 1 after 0.2.10; the notification is the second half of the patch he posted there. The shim's own README now documents its use on any ALSA system.
+
 ## [0.9.6] - 2026-11-04
 
 - **A track's end is reported exactly, so the next track starts on its own.** The Pulse shim moves to 0.2.10, release `shim-v0.2.10`. Played, frozen and held positions are kept in client bytes instead of passing through microseconds and back, which left the read index one frame short of the write index at the end of every stream; the daemon now sees its end-of-stream played out. Active underrun recovery takes its snapshot of played bytes before preparing the PCM and freezing the clock, so it no longer holds a stale position. With Soloist started by hand outside Volumio, a track could sit at its end forever and never advance; reported with a patch by ludoo on piCorePlayer and confirmed on moOde by felipec84 in issue 1. The shim's regression tests run in CI on every push and before every shim release.
