@@ -204,9 +204,13 @@ stream_prepare(pa_stream *s)
     }
     avail = snd_pcm_avail(s->pcm);
     if (avail < 0) {
-        /* prepare on the switcher leaves volumioOutput dead (Motivo). */
+        /* prepare on the switcher leaves volumioOutput dead (Motivo).
+         * This is the one underflow of the spell: the latch is taken so a
+         * dry-ring check already armed does not report a second. */
         s->drop_unsafe = 1;
         shim_stream_set_output(s, 0);
+        stream_cancel_underflow(s);
+        s->underflow_sent = 1;
         if (s->underflow_cb)
             s->underflow_cb(s, s->underflow_cb_userdata);
         return -1;
@@ -335,25 +339,30 @@ shim_stream_poll_error(pa_stream *s)
 
 /*
  * Underflow, as a Pulse server reports it: once per dry spell, after
- * ALSA has played out what it held when the ring ran dry. The bound is
- * the remaining delay, or the whole buffer when the device will not say,
- * plus a margin, and the check is made again at that time. A device that
- * has stopped, or reports nothing left, is dry; so is one that still
- * claims to be running once the bound has passed, which is what an
- * ioplug with a stuck delay looks like. Re-armed by the next write that
+ * ALSA has played out what it held when the ring ran dry.
+ *
+ * Each wait is what the PCM says it still holds, plus a margin; zero is
+ * the PCM saying it is empty and gets the margin alone; a PCM that will
+ * not say gets the whole buffer. At the check, a PCM that has stopped,
+ * or reports nothing left, is dry. A PCM that is still running with a
+ * delay smaller than at the last look is consuming, so the remainder is
+ * waited out and the look repeated; one whose delay has not moved is a
+ * software plugin with a stuck figure, and it is dry. A cap of twice the
+ * configured buffer ends any spell. Re-armed by the next write that
  * queues data, and by flush. Never without a PCM.
  */
 static unsigned
-stream_dry_bound_ms(pa_stream *s)
+stream_delay_ms(pa_stream *s, snd_pcm_sframes_t delay)
 {
-    snd_pcm_sframes_t delay = 0;
-    unsigned ms = 0;
+    if (delay <= 0 || !s->ss.rate)
+        return 0;
+    return (unsigned)((uint64_t)delay * 1000 / s->ss.rate);
+}
 
-    if (s->pcm && s->ss.rate && snd_pcm_delay(s->pcm, &delay) == 0 && delay > 0)
-        ms = (unsigned)((uint64_t)delay * 1000 / s->ss.rate);
-    else
-        ms = (unsigned)(s->configured_sink_usec / 1000);
-    return ms + SHIM_UNDERFLOW_MARGIN_MS;
+static unsigned
+stream_dry_cap_ms(pa_stream *s)
+{
+    return (unsigned)(2 * (s->configured_sink_usec / 1000)) + SHIM_UNDERFLOW_MARGIN_MS;
 }
 
 static long
@@ -389,18 +398,21 @@ underflow_check(pa_mainloop_api *a, pa_time_event *e, const struct timeval *tv,
         dry = 1;
     else if (snd_pcm_delay(s->pcm, &delay) != 0 || delay <= 0)
         dry = 1;
+    else if (stream_dry_elapsed_ms(s) >= (long)stream_dry_cap_ms(s))
+        dry = 1;
+    else if (s->dry_last_delay < 0 || delay < s->dry_last_delay)
+        dry = 0;
     else
-        dry = stream_dry_elapsed_ms(s) >= (long)s->dry_bound_ms;
+        dry = 1;
     if (!dry) {
-        unsigned ms = (unsigned)((uint64_t)delay * 1000 / s->ss.rate) +
-                      SHIM_UNDERFLOW_MARGIN_MS;
-
-        s->underflow_ev = shim_after_ms(s->c->api, ms, underflow_check, s);
+        s->dry_last_delay = delay;
+        s->dry_wait_ms = stream_delay_ms(s, delay) + SHIM_UNDERFLOW_MARGIN_MS;
+        s->underflow_ev = shim_after_ms(s->c->api, s->dry_wait_ms, underflow_check, s);
         return;
     }
     s->underflow_sent = 1;
-    shim_log("underflow after %ld ms, pcm %s\n", stream_dry_elapsed_ms(s),
-             snd_pcm_state_name(snd_pcm_state(s->pcm)));
+    shim_log("underflow after %ld ms, pcm %s delay=%ld\n", stream_dry_elapsed_ms(s),
+             snd_pcm_state_name(snd_pcm_state(s->pcm)), (long)delay);
     if (s->underflow_cb)
         s->underflow_cb(s, s->underflow_cb_userdata);
 }
@@ -413,13 +425,18 @@ stream_arm_underflow(pa_stream *s)
     if (s->underflow_sent || s->underflow_ev || s->paused || !s->pcm)
         return;
     gettimeofday(&s->dry_since, NULL);
-    s->dry_bound_ms = stream_dry_bound_ms(s);
-    if (s->pcm && snd_pcm_delay(s->pcm, &delay) != 0)
+    if (snd_pcm_delay(s->pcm, &delay) == 0) {
+        s->dry_last_delay = delay > 0 ? delay : 0;
+        s->dry_wait_ms = stream_delay_ms(s, delay) + SHIM_UNDERFLOW_MARGIN_MS;
+    } else {
         delay = -1;
-    shim_log("ring dry, pcm %s delay=%ld bound=%ums\n",
+        s->dry_last_delay = -1;
+        s->dry_wait_ms = (unsigned)(s->configured_sink_usec / 1000) + SHIM_UNDERFLOW_MARGIN_MS;
+    }
+    shim_log("ring dry, pcm %s delay=%ld wait=%ums\n",
              snd_pcm_state_name(snd_pcm_state(s->pcm)), (long)delay,
-             s->dry_bound_ms);
-    s->underflow_ev = shim_after_ms(s->c->api, s->dry_bound_ms, underflow_check, s);
+             s->dry_wait_ms);
+    s->underflow_ev = shim_after_ms(s->c->api, s->dry_wait_ms, underflow_check, s);
 }
 
 static void

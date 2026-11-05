@@ -11,8 +11,9 @@
 #define SHIM_PATH_MAX 768
 
 /* A dry ring is reported as an underflow once ALSA has played out what it
- * held: the remaining delay, or the whole buffer when the PCM will not say,
- * plus this margin. */
+ * held. Each wait is the delay the PCM reports plus this margin; a PCM
+ * that will not say gets the whole buffer. A spell ends at the latest
+ * after twice the configured buffer plus the margin. */
 #define SHIM_UNDERFLOW_MARGIN_MS 20
 
 struct ring;
@@ -150,7 +151,8 @@ struct pa_stream {
     pa_time_event *underflow_ev;
     int underflow_sent;
     struct timeval dry_since;
-    unsigned dry_bound_ms;
+    unsigned dry_wait_ms;
+    snd_pcm_sframes_t dry_last_delay;
 };
 
 struct ring *ring_new(size_t bytes);

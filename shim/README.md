@@ -1,4 +1,4 @@
-# Pulse shim 0.2.11
+# Pulse shim 0.2.12
 
 One `libpulse.so.0` that lets Spotify Soloist play through ALSA, with no
 PulseAudio and no PipeWire on the system.
@@ -65,10 +65,10 @@ Download, verify, unpack:
 
 ```sh
 cd ~
-curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.11/soloist-shim-0.2.11-arm64.tar.gz
-curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.11/SHA256SUMS
+curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.12/soloist-shim-0.2.12-arm64.tar.gz
+curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.12/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-mkdir -p ~/soloist-shim && tar -C ~/soloist-shim -xzf soloist-shim-0.2.11-arm64.tar.gz
+mkdir -p ~/soloist-shim && tar -C ~/soloist-shim -xzf soloist-shim-0.2.12-arm64.tar.gz
 ls ~/soloist-shim
 # LICENSE  SOURCE_REVISION  libpulse.so.0
 ```
@@ -335,8 +335,8 @@ Every line the library can print:
 | `cork 1 pcm=1` / `cork 0 pcm=1` | pause / play; `pcm=1` means the card is open |
 | `flush ring pcm=1 drop_unsafe=0 avail=N` | a seek or a track change discarded the queued audio |
 | `write N -> M queued=Q paused=P pcm=C` | one of the first eight writes; `M < N` is a short write, normal when the ring is nearly full |
-| `ring dry, pcm STATE delay=D bound=Bms` | Soloist stopped supplying audio; the card still holds `D` frames; the library waits `B` ms before deciding |
-| `underflow after N ms, pcm STATE` | the dry spell was real; Soloist has been told, once |
+| `ring dry, pcm STATE delay=D wait=Wms` | Soloist stopped supplying audio; the card still holds `D` frames (`-1`: it would not say); the library looks again in `W` ms |
+| `underflow after N ms, pcm STATE delay=D` | the dry spell was real; Soloist has been told, once, `N` ms after the ring ran dry |
 | `poll error, pcm XRUN` | the card underran; recovered with one prepare, position held |
 | `avail ERR` / `writei ERR, avail=N` | an ALSA error on the I/O path; recovered with one prepare |
 | `pcm prepare failed` / `pcm dead, reopen scheduled` | the handle is dead; closed and reopened away from the I/O thread |
@@ -354,8 +354,9 @@ A dry spell that recovered, which is what a brief stall on the Soloist
 side looks like now:
 
 ```text
-soloist-shim: ring dry, pcm RUNNING delay=4410 bound=120ms
-soloist-shim: underflow after 121 ms, pcm PREPARED
+soloist-shim: ring dry, pcm RUNNING delay=3300 wait=94ms
+soloist-shim: poll error, pcm XRUN
+soloist-shim: underflow after 94 ms, pcm PREPARED delay=0
 soloist-shim: pa_stream_cork
 soloist-shim: cork 1 pcm=1
 ...
@@ -391,9 +392,13 @@ rely on is the same for both.
   index never goes backwards.
 - One underflow per dry spell, when the ring is empty and the device
   holds nothing, including a dry spell the poll descriptor never reports.
-  The check is made once ALSA has had time to play out what it held, the
-  remaining delay or the whole buffer plus 20 ms; a device that still
-  claims to be running after that is dry. The next write that queues data
+  The library waits for what the device says it still holds, plus 20 ms,
+  then looks: a device that has stopped or reports nothing left is dry; a
+  device still running whose delay is smaller than at the last look is
+  consuming, so the remainder is waited out and the look repeated; one
+  whose delay has not moved is a software plugin with a stuck figure, and
+  it is dry. A device that will not say gets the whole buffer; no spell
+  lasts longer than twice the buffer. The next write that queues data
   ends the spell, as does flush. A poll error on the descriptor goes
   through the same recovery as any underrun: position sampled, clock
   frozen, one prepare, a line in the diag. The next unpaused write
@@ -465,7 +470,7 @@ and compare with the archive you unpacked.
 | The Spotify slider does nothing | `APULSE_EXTERNAL_VOLUME=1` with nothing driving the mixer | unset it, or drive the mixer from Soloist's volume events |
 | Too loud or too quiet against other sources | levels differ by design | `APULSE_OUTPUT_TRIM_DB` |
 | A track plays to the end and never advances; Soloist logs `Starting playback` every 5 s | a library older than 0.2.10 | update |
-| Audio stops mid-track, Soloist logs `tryStartPlayback failed` every 200 ms, the card reads `PREPARED` | a library older than 0.2.11 | update; if it recurs on 0.2.11, report with the `ring dry` and `underflow` lines |
+| Audio stops mid-track, Soloist logs `tryStartPlayback failed` every 200 ms, the card reads `PREPARED` | a library older than 0.2.11 | update; if it recurs on 0.2.12, report with the `ring dry` and `underflow` lines |
 | `ps` shows the real API key | the library was not loaded at exec | use `LD_PRELOAD`, check the path; the diag's first line confirms the scrub |
 | `symbol lookup error` or `undefined symbol: pa_...` at startup | a Soloist newer than the ABI list | report the name; see [How it works](#how-it-works) |
 | Silence after another player used the card | the hand-over file is still present | remove it; the library reopens on Soloist's next play |
@@ -558,9 +563,11 @@ where each rule was learned; the rule holds everywhere.
   (0.2.11, issue 1). Before, the ring running dry only parked the output,
   the mainloop prepared the underrun it then saw on the descriptor without
   a word, and a Soloist that had been told the stream was drained but
-  never told underflow stopped feeding and never came back. On a software
-  plugin that keeps claiming RUNNING with a stuck delay, the bound is
-  what decides.
+  never told underflow stopped feeding and never came back. 0.2.11 decided
+  on a fixed bound, which called a device still playing at the bound dry
+  and waited a whole buffer on a device that had said it was empty; 0.2.12
+  waits out a delay that is shrinking and calls only an unmoved delay
+  stuck, zero delay is the margin alone, and twice the buffer is the cap.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole
   buffer. Soloist always writes 32 KiB and will not uncork if that call
   fails, so rejecting a short write deadlocks preroll (0.2.1).

@@ -447,32 +447,37 @@ dryspell_cases(pa_context *context)
     pa_stream_set_underflow_callback(stream, underflow, NULL);
     before = underflows;
 
-    /* A dry ring on a running device arms one check for the remaining delay. */
+    /* A dry ring on a running device waits for what the device still holds, plus the margin. */
     stream->timing.write_index = second;
+    stream->configured_sink_usec = 80000;
     pcm_delay = 480;
     stream_arm_underflow(stream);
     check("dry ring arms a check", stream->underflow_ev != NULL, 1);
-    check("bound is the delay plus the margin", stream->dry_bound_ms, 10 + SHIM_UNDERFLOW_MARGIN_MS);
+    check("the wait is the delay plus the margin", stream->dry_wait_ms, 10 + SHIM_UNDERFLOW_MARGIN_MS);
+    check("the delay at the dry moment is remembered", stream->dry_last_delay, 480);
     check("arming sends nothing", underflows, before);
     stream_arm_underflow(stream);
     check("a second arm does not double the check", stream->underflow_ev != NULL, 1);
 
-    /* Still running with audio queued and the bound not passed: ask again later. */
+    /* The scheduled fire: still running, delay smaller than last time, so consuming: wait again. */
+    stream->dry_since.tv_usec -= 30000;
+    if (stream->dry_since.tv_usec < 0) { stream->dry_since.tv_usec += 1000000; stream->dry_since.tv_sec -= 1; }
+    pcm_delay = 240;
     fire_underflow_check(stream);
-    check("running device with delay is not dry yet", underflows, before);
-    check("the check re-arms itself", stream->underflow_ev != NULL, 1);
+    check("running device consuming is not dry", underflows, before);
+    check("the check waits again", stream->underflow_ev != NULL, 1);
+    check("the wait is the remaining delay plus the margin", stream->dry_wait_ms, 5 + SHIM_UNDERFLOW_MARGIN_MS);
+    check("the smaller delay is remembered", stream->dry_last_delay, 240);
 
-    /* The device stopped: dry, reported once. */
-    pcm_state = SND_PCM_STATE_PREPARED;
-    pcm_delay = 0;
+    /* The next scheduled fire: the delay has not moved, so the figure is stuck: dry. */
+    stream->dry_since.tv_usec -= 25000;
+    if (stream->dry_since.tv_usec < 0) { stream->dry_since.tv_usec += 1000000; stream->dry_since.tv_sec -= 1; }
     fire_underflow_check(stream);
-    check("stopped device reports underflow", underflows, before + 1);
+    check("running device with an unmoved delay is dry", underflows, before + 1);
     check("underflow is marked sent", stream->underflow_sent, 1);
     check("no check remains armed", stream->underflow_ev != NULL, 0);
     stream_arm_underflow(stream);
     check("one per dry spell: no re-arm after sending", stream->underflow_ev != NULL, 0);
-    shim_stream_update_timing(stream);
-    check("drained position with the device stopped", stream->timing.read_index, second);
 
     /* The next write that queues data ends the dry spell. */
     check("write queues", pa_stream_write(stream, samples, sizeof(samples), NULL, 0, PA_SEEK_RELATIVE), 0);
@@ -481,28 +486,64 @@ dryspell_cases(pa_context *context)
     ring_drop(stream->rb, sizeof(samples));
     stream->timing.write_index = second;
 
-    /* A device that still claims RUNNING with a stuck delay is dry once the bound has passed. */
-    pcm_state = SND_PCM_STATE_RUNNING;
-    pcm_delay = 65536;
+    /* The device stopped at the check: dry. */
+    pcm_delay = 480;
     stream_arm_underflow(stream);
-    check("stuck delay bounds the wait", stream->dry_bound_ms, 65536 * 1000 / 48000 + SHIM_UNDERFLOW_MARGIN_MS);
+    pcm_state = SND_PCM_STATE_PREPARED;
+    pcm_delay = 0;
     fire_underflow_check(stream);
-    check("within the bound a running device is not dry", underflows, before + 1);
-    stream->dry_since.tv_sec -= 3;
+    check("stopped device reports underflow", underflows, before + 2);
+    shim_stream_update_timing(stream);
+    check("drained position with the device stopped", stream->timing.read_index, second);
+    stream->underflow_sent = 0;
+    pcm_state = SND_PCM_STATE_RUNNING;
+
+    /* Zero delay is the device saying it is empty: the margin alone, and dry at the check. */
+    pcm_delay = 0;
+    stream_arm_underflow(stream);
+    check("zero delay waits the margin only", stream->dry_wait_ms, SHIM_UNDERFLOW_MARGIN_MS);
     fire_underflow_check(stream);
-    check("past the bound a running device with a stuck delay is dry", underflows, before + 2);
+    check("running device reporting empty is dry", underflows, before + 3);
     stream->underflow_sent = 0;
 
-    /* A running device whose delay query fails is dry. */
+    /* A failed query at the dry moment waits the whole buffer; failing again at the check is dry. */
     pcm_delay = 1;
     delay_error = -EPIPE;
     stream_arm_underflow(stream);
-    check("delay error bounds by the buffer", stream->dry_bound_ms, SHIM_UNDERFLOW_MARGIN_MS);
+    check("failed query waits the buffer plus the margin", stream->dry_wait_ms, 80 + SHIM_UNDERFLOW_MARGIN_MS);
+    check("a failed query remembers no delay", stream->dry_last_delay, -1);
     fire_underflow_check(stream);
-    check("running device with a failing delay is dry", underflows, before + 3);
+    check("running device with a failing delay is dry", underflows, before + 4);
     delay_error = 0;
-    pcm_delay = 0;
     stream->underflow_sent = 0;
+
+    /* The cap: a delay that keeps shrinking cannot string the spell past twice the buffer. */
+    stream->configured_sink_usec = 10000;
+    pcm_delay = 480;
+    stream_arm_underflow(stream);
+    stream->dry_since.tv_usec -= 50000;
+    if (stream->dry_since.tv_usec < 0) { stream->dry_since.tv_usec += 1000000; stream->dry_since.tv_sec -= 1; }
+    pcm_delay = 400;
+    fire_underflow_check(stream);
+    check("past the cap a consuming device is dry anyway", underflows, before + 5);
+    stream->underflow_sent = 0;
+    stream->configured_sink_usec = 80000;
+
+    /* The dead-avail recovery is the one underflow of its spell: it takes the latch. */
+    pcm_delay = 480;
+    stream_arm_underflow(stream);
+    check("a check is armed before the dead recovery", stream->underflow_ev != NULL, 1);
+    pcm_avail = -EPIPE;
+    check("dead avail after prepare fails the recovery", stream_prepare(stream), -1);
+    check("dead avail reports underflow", underflows, before + 6);
+    check("dead avail takes the latch", stream->underflow_sent, 1);
+    check("dead avail cancels the armed check", stream->underflow_ev != NULL, 0);
+    pcm_avail = 1024;
+    stream->drop_unsafe = 0;
+    stream->underflow_sent = 0;
+    stream_clock_start(stream);
+    pcm_state = SND_PCM_STATE_RUNNING;
+    pcm_delay = 0;
 
     /* Nothing while corked; cork cancels a pending check; flush resets the spell. */
     stream_arm_underflow(stream);
@@ -524,7 +565,7 @@ dryspell_cases(pa_context *context)
     check("ring write", ring_write(stream->rb, samples, sizeof(samples)), sizeof(samples));
     pcm_state = SND_PCM_STATE_PREPARED;
     fire_underflow_check(stream);
-    check("data in the ring is not an underflow", underflows, before + 3);
+    check("data in the ring is not an underflow", underflows, before + 6);
     ring_drop(stream->rb, sizeof(samples));
     pcm_state = SND_PCM_STATE_RUNNING;
 

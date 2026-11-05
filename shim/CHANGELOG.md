@@ -2,7 +2,11 @@
 
 All notable changes to the Pulse shim, `libpulse.so.0` for Spotify Soloist on ALSA. The format follows Keep a Changelog; versions follow Semantic Versioning. Each version is a release `shim-v<version>` on this repository; the Volumio plugin pins one of them and has its own changelog.
 
-## [0.2.11] - unreleased
+## [0.2.12] - unreleased
+
+- **The dry-spell check waits out a device that is still playing.** 0.2.11 decided at a fixed bound and so told Soloist the stream was dry whenever the device was still running at that moment, audio or not; and it waited a whole buffer before even looking at a device that had reported zero delay. Now each wait is what the device says it still holds plus the margin, zero included; a device still running whose delay is smaller than at the last look is consuming and is waited out; only an unmoved delay is called stuck; a device that will not say gets the whole buffer; no spell lasts longer than twice the buffer. The dead-device recovery takes the same once-per-spell latch, so a check already armed cannot report a second underflow behind it. Found in review of 0.2.11 before any confirmation on the reporters' hardware.
+
+## [0.2.11] - 2026-11-05, pre-release
 
 - **One underflow per dry spell, on every device.** When the ring runs dry the library now reports an underflow to Soloist once ALSA has played out what it held: the remaining delay, or the whole buffer when the device will not say, plus a margin. A device that has stopped, reports nothing left, or still claims to be running once that bound has passed, is dry. The next write that queues data ends the spell, as does flush; nothing is reported while corked or without a PCM. Before, a dry ring only parked the output; a Soloist that saw the stream drained mid-track and was never told underflow stopped feeding and never came back, the PCM left `PREPARED`. Reported by ludoo on piCorePlayer with a `plughw` device in issue 1; the notification is the second half of the patch he posted there.
 - **A poll error is an underrun, recovered as one.** An error the poll reports on the PCM descriptor, which is how a hardware PCM announces an underrun, now goes through the same recovery as any other: the played position sampled, the clock frozen, one prepare, a line in the diag. Before, the mainloop prepared the device itself without a word, so the recovery, the diagnostic and the underflow all missed it.
