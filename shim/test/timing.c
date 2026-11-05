@@ -469,7 +469,16 @@ dryspell_cases(pa_context *context)
     check("the wait is the remaining delay plus the margin", stream->dry_wait_ms, 5 + SHIM_UNDERFLOW_MARGIN_MS);
     check("the smaller delay is remembered", stream->dry_last_delay, 240);
 
-    /* The next scheduled fire: the delay has not moved, so the figure is stuck: dry. */
+    /* A delay that rose by a frame is a pointer estimate stepping back on a playing card: wait again. */
+    stream->dry_since.tv_usec -= 25000;
+    if (stream->dry_since.tv_usec < 0) { stream->dry_since.tv_usec += 1000000; stream->dry_since.tv_sec -= 1; }
+    pcm_delay = 241;
+    fire_underflow_check(stream);
+    check("running device with a risen delay is still playing", underflows, before);
+    check("the risen figure is remembered", stream->dry_last_delay, 241);
+    check("the check waits again after a rise", stream->underflow_ev != NULL, 1);
+
+    /* The next scheduled fire: the delay is exactly where it was, so the figure is stuck: dry. */
     stream->dry_since.tv_usec -= 25000;
     if (stream->dry_since.tv_usec < 0) { stream->dry_since.tv_usec += 1000000; stream->dry_since.tv_sec -= 1; }
     fire_underflow_check(stream);

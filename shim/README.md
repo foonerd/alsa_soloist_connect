@@ -1,4 +1,4 @@
-# Pulse shim 0.2.12
+# Pulse shim 0.2.13
 
 One `libpulse.so.0` that lets Spotify Soloist play through ALSA, with no
 PulseAudio and no PipeWire on the system.
@@ -65,10 +65,10 @@ Download, verify, unpack:
 
 ```sh
 cd ~
-curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.12/soloist-shim-0.2.12-arm64.tar.gz
-curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.12/SHA256SUMS
+curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.13/soloist-shim-0.2.13-arm64.tar.gz
+curl -LO https://github.com/foonerd/alsa_soloist_connect/releases/download/shim-v0.2.13/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-mkdir -p ~/soloist-shim && tar -C ~/soloist-shim -xzf soloist-shim-0.2.12-arm64.tar.gz
+mkdir -p ~/soloist-shim && tar -C ~/soloist-shim -xzf soloist-shim-0.2.13-arm64.tar.gz
 ls ~/soloist-shim
 # LICENSE  SOURCE_REVISION  libpulse.so.0
 ```
@@ -394,10 +394,11 @@ rely on is the same for both.
   holds nothing, including a dry spell the poll descriptor never reports.
   The library waits for what the device says it still holds, plus 20 ms,
   then looks: a device that has stopped or reports nothing left is dry; a
-  device still running whose delay is smaller than at the last look is
-  consuming, so the remainder is waited out and the look repeated; one
-  whose delay has not moved is a software plugin with a stuck figure, and
-  it is dry. A device that will not say gets the whole buffer; no spell
+  device still running whose delay has moved since the last look, down as
+  it consumes or up by a frame as a pointer estimate steps back, is
+  playing, so the new figure is waited out and the look repeated; one
+  whose delay is exactly where it was is a software plugin with a stuck
+  figure, and it is dry. A device that will not say gets the whole buffer; no spell
   lasts longer than twice the buffer. The next write that queues data
   ends the spell, as does flush. A poll error on the descriptor goes
   through the same recovery as any underrun: position sampled, clock
@@ -470,7 +471,7 @@ and compare with the archive you unpacked.
 | The Spotify slider does nothing | `APULSE_EXTERNAL_VOLUME=1` with nothing driving the mixer | unset it, or drive the mixer from Soloist's volume events |
 | Too loud or too quiet against other sources | levels differ by design | `APULSE_OUTPUT_TRIM_DB` |
 | A track plays to the end and never advances; Soloist logs `Starting playback` every 5 s | a library older than 0.2.10 | update |
-| Audio stops mid-track, Soloist logs `tryStartPlayback failed` every 200 ms, the card reads `PREPARED` | a library older than 0.2.11 | update; if it recurs on 0.2.12, report with the `ring dry` and `underflow` lines |
+| Audio stops mid-track, Soloist logs `tryStartPlayback failed` every 200 ms, the card reads `PREPARED` | a library older than 0.2.11 | update; if it recurs on 0.2.13, report with the `ring dry` and `underflow` lines |
 | `ps` shows the real API key | the library was not loaded at exec | use `LD_PRELOAD`, check the path; the diag's first line confirms the scrub |
 | `symbol lookup error` or `undefined symbol: pa_...` at startup | a Soloist newer than the ABI list | report the name; see [How it works](#how-it-works) |
 | Silence after another player used the card | the hand-over file is still present | remove it; the library reopens on Soloist's next play |
@@ -567,7 +568,9 @@ where each rule was learned; the rule holds everywhere.
   on a fixed bound, which called a device still playing at the bound dry
   and waited a whole buffer on a device that had said it was empty; 0.2.12
   waits out a delay that is shrinking and calls only an unmoved delay
-  stuck, zero delay is the margin alone, and twice the buffer is the cap.
+  stuck, zero delay is the margin alone, and twice the buffer is the cap;
+  0.2.13 treats a delay that rose by a frame, a pointer estimate stepping
+  back on a card still playing, as moving too.
 - `pa_stream_write` takes a prefix if the ring cannot hold the whole
   buffer. Soloist always writes 32 KiB and will not uncork if that call
   fails, so rejecting a short write deadlocks preroll (0.2.1).

@@ -345,10 +345,11 @@ shim_stream_poll_error(pa_stream *s)
  * the PCM saying it is empty and gets the margin alone; a PCM that will
  * not say gets the whole buffer. At the check, a PCM that has stopped,
  * or reports nothing left, is dry. A PCM that is still running with a
- * delay smaller than at the last look is consuming, so the remainder is
- * waited out and the look repeated; one whose delay has not moved is a
- * software plugin with a stuck figure, and it is dry. A cap of twice the
- * configured buffer ends any spell. Re-armed by the next write that
+ * delay that has moved since the last look is playing: down as it
+ * consumes, up by a frame or two when a hardware pointer estimate steps
+ * back; the new figure is waited out and the look repeated. One whose
+ * delay is exactly where it was is a software plugin with a stuck figure,
+ * and it is dry. A cap of twice the configured buffer ends any spell. Re-armed by the next write that
  * queues data, and by flush. Never without a PCM.
  */
 static unsigned
@@ -400,7 +401,7 @@ underflow_check(pa_mainloop_api *a, pa_time_event *e, const struct timeval *tv,
         dry = 1;
     else if (stream_dry_elapsed_ms(s) >= (long)stream_dry_cap_ms(s))
         dry = 1;
-    else if (s->dry_last_delay < 0 || delay < s->dry_last_delay)
+    else if (s->dry_last_delay < 0 || delay != s->dry_last_delay)
         dry = 0;
     else
         dry = 1;

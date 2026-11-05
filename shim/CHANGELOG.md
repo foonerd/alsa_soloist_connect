@@ -2,7 +2,11 @@
 
 All notable changes to the Pulse shim, `libpulse.so.0` for Spotify Soloist on ALSA. The format follows Keep a Changelog; versions follow Semantic Versioning. Each version is a release `shim-v<version>` on this repository; the Volumio plugin pins one of them and has its own changelog.
 
-## [0.2.12] - unreleased
+## [0.2.13] - 2026-11-05, pre-release
+
+- **A delay that rose is a card still playing.** `snd_pcm_delay` is a pointer estimate and can step up by a frame or two on a hardware card that is consuming; 0.2.12 read any figure that had not fallen as the stuck plugin and ended the spell early, a smaller form of the cork it had just removed. Only a figure exactly where it was is stuck now; a risen one is waited out like a fallen one, and the cap of twice the buffer still ends a figure that only climbs. Found in review of 0.2.12 before anyone heard it.
+
+## [0.2.12] - 2026-11-05, pre-release
 
 - **The dry-spell check waits out a device that is still playing.** 0.2.11 decided at a fixed bound and so told Soloist the stream was dry whenever the device was still running at that moment, audio or not; and it waited a whole buffer before even looking at a device that had reported zero delay. Now each wait is what the device says it still holds plus the margin, zero included; a device still running whose delay is smaller than at the last look is consuming and is waited out; only an unmoved delay is called stuck; a device that will not say gets the whole buffer; no spell lasts longer than twice the buffer. The dead-device recovery takes the same once-per-spell latch, so a check already armed cannot report a second underflow behind it. Found in review of 0.2.11 before any confirmation on the reporters' hardware.
 
