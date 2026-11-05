@@ -420,6 +420,163 @@ drain_cases(pa_context *context)
             }
 }
 
+/*
+ * Fire the armed underflow check as the mainloop would at its time: the
+ * callback frees the event and decides.
+ */
+static void
+fire_underflow_check(pa_stream *stream)
+{
+    pa_time_event *event = stream->underflow_ev;
+
+    if (!event) {
+        check("an underflow check is armed", 0, 1);
+        return;
+    }
+    underflow_check(stream->c->api, event, &event->when, stream);
+}
+
+static void
+dryspell_cases(pa_context *context)
+{
+    pa_stream *stream = new_stream(context, PA_SAMPLE_FLOAT32LE, 48000, 2);
+    const int64_t second = 48000 * 8;
+    float samples[16] = {0};
+    unsigned before;
+
+    pa_stream_set_underflow_callback(stream, underflow, NULL);
+    before = underflows;
+
+    /* A dry ring on a running device arms one check for the remaining delay. */
+    stream->timing.write_index = second;
+    pcm_delay = 480;
+    stream_arm_underflow(stream);
+    check("dry ring arms a check", stream->underflow_ev != NULL, 1);
+    check("bound is the delay plus the margin", stream->dry_bound_ms, 10 + SHIM_UNDERFLOW_MARGIN_MS);
+    check("arming sends nothing", underflows, before);
+    stream_arm_underflow(stream);
+    check("a second arm does not double the check", stream->underflow_ev != NULL, 1);
+
+    /* Still running with audio queued and the bound not passed: ask again later. */
+    fire_underflow_check(stream);
+    check("running device with delay is not dry yet", underflows, before);
+    check("the check re-arms itself", stream->underflow_ev != NULL, 1);
+
+    /* The device stopped: dry, reported once. */
+    pcm_state = SND_PCM_STATE_PREPARED;
+    pcm_delay = 0;
+    fire_underflow_check(stream);
+    check("stopped device reports underflow", underflows, before + 1);
+    check("underflow is marked sent", stream->underflow_sent, 1);
+    check("no check remains armed", stream->underflow_ev != NULL, 0);
+    stream_arm_underflow(stream);
+    check("one per dry spell: no re-arm after sending", stream->underflow_ev != NULL, 0);
+    shim_stream_update_timing(stream);
+    check("drained position with the device stopped", stream->timing.read_index, second);
+
+    /* The next write that queues data ends the dry spell. */
+    check("write queues", pa_stream_write(stream, samples, sizeof(samples), NULL, 0, PA_SEEK_RELATIVE), 0);
+    check("write resets the sent mark", stream->underflow_sent, 0);
+    check("write leaves no stale check", stream->underflow_ev != NULL, 0);
+    ring_drop(stream->rb, sizeof(samples));
+    stream->timing.write_index = second;
+
+    /* A device that still claims RUNNING with a stuck delay is dry once the bound has passed. */
+    pcm_state = SND_PCM_STATE_RUNNING;
+    pcm_delay = 65536;
+    stream_arm_underflow(stream);
+    check("stuck delay bounds the wait", stream->dry_bound_ms, 65536 * 1000 / 48000 + SHIM_UNDERFLOW_MARGIN_MS);
+    fire_underflow_check(stream);
+    check("within the bound a running device is not dry", underflows, before + 1);
+    stream->dry_since.tv_sec -= 3;
+    fire_underflow_check(stream);
+    check("past the bound a running device with a stuck delay is dry", underflows, before + 2);
+    stream->underflow_sent = 0;
+
+    /* A running device whose delay query fails is dry. */
+    pcm_delay = 1;
+    delay_error = -EPIPE;
+    stream_arm_underflow(stream);
+    check("delay error bounds by the buffer", stream->dry_bound_ms, SHIM_UNDERFLOW_MARGIN_MS);
+    fire_underflow_check(stream);
+    check("running device with a failing delay is dry", underflows, before + 3);
+    delay_error = 0;
+    pcm_delay = 0;
+    stream->underflow_sent = 0;
+
+    /* Nothing while corked; cork cancels a pending check; flush resets the spell. */
+    stream_arm_underflow(stream);
+    run_operation(stream, cork_run, 1);
+    check("cork cancels the pending check", stream->underflow_ev != NULL, 0);
+    stream_arm_underflow(stream);
+    check("no arm while corked", stream->underflow_ev != NULL, 0);
+    run_operation(stream, cork_run, 0);
+    stream_arm_underflow(stream);
+    stream->underflow_sent = 1;
+    run_operation(stream, flush_run, 0);
+    check("flush cancels the check", stream->underflow_ev != NULL, 0);
+    check("flush resets the sent mark", stream->underflow_sent, 0);
+    stream_clock_start(stream);
+
+    /* Data back in the ring at the check: not dry. */
+    stream->timing.write_index = second;
+    stream_arm_underflow(stream);
+    check("ring write", ring_write(stream->rb, samples, sizeof(samples)), sizeof(samples));
+    pcm_state = SND_PCM_STATE_PREPARED;
+    fire_underflow_check(stream);
+    check("data in the ring is not an underflow", underflows, before + 3);
+    ring_drop(stream->rb, sizeof(samples));
+    pcm_state = SND_PCM_STATE_RUNNING;
+
+    /* Never without a PCM. */
+    stream->pcm = NULL;
+    stream_arm_underflow(stream);
+    check("no PCM, no check", stream->underflow_ev != NULL, 0);
+    stream->pcm = (snd_pcm_t *)&pcm_token;
+
+    /* The poll path: an underrun the poll reports goes through the same recovery. */
+    {
+        unsigned prepares = prepare_calls;
+
+        stream->timing.write_index = 2 * second;
+        pcm_delay = 1;
+        shim_stream_update_timing(stream);
+        pcm_state = SND_PCM_STATE_XRUN;
+        delay_error = -EPIPE;
+        shim_stream_poll_error(stream);
+        check("poll error prepares once", prepare_calls, prepares + 1);
+        check("poll error produces PREPARED", pcm_state, SND_PCM_STATE_PREPARED);
+        check("poll error freezes the clock", stream->clock_running, 0);
+        shim_stream_update_timing(stream);
+        check("poll error on an empty ring reaches the exact end", stream->timing.read_index, 2 * second);
+        delay_error = 0;
+        pcm_delay = 0;
+        stream_clock_start(stream);
+
+        stream->timing.write_index = 3 * second;
+        check("queued at the underrun", ring_write(stream->rb, samples, sizeof(samples)), sizeof(samples));
+        pcm_delay = 1;
+        shim_stream_update_timing(stream);
+        pcm_state = SND_PCM_STATE_XRUN;
+        delay_error = -EPIPE;
+        shim_stream_poll_error(stream);
+        shim_stream_update_timing(stream);
+        check("poll error credits only submitted audio", stream->timing.read_index, 3 * second - sizeof(samples));
+        check("poll error preserves the ring", ring_readable(stream->rb), sizeof(samples));
+        delay_error = 0;
+        ring_drop(stream->rb, sizeof(samples));
+    }
+
+    /* Yield: unset means no yield, the PCM stays. */
+    unsetenv("APULSE_YIELD_PATH");
+    stream_clock_start(stream);
+    shim_stream_update_timing(stream);
+    check("no yield path, no yield", stream->pcm != NULL, 1);
+    setenv("APULSE_YIELD_PATH", "/nonexistent/soloist-test-yield", 1);
+
+    free_stream(stream);
+}
+
 int main(int argc, char **argv)
 {
     pa_threaded_mainloop *mainloop = pa_threaded_mainloop_new();
@@ -434,6 +591,8 @@ int main(int argc, char **argv)
         precision_cases(context);
     else if (argc == 2 && strcmp(argv[1], "drain") == 0)
         drain_cases(context);
+    else if (argc == 2 && strcmp(argv[1], "dryspell") == 0)
+        dryspell_cases(context);
     else
         return 2;
     pa_context_unref(context);

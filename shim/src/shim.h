@@ -8,8 +8,12 @@
 
 #define SHIM_EXPORT __attribute__((visibility("default")))
 
-#define SHIM_YIELD_DEFAULT "/data/soloist/alsa.yield"
 #define SHIM_PATH_MAX 768
+
+/* A dry ring is reported as an underflow once ALSA has played out what it
+ * held: the remaining delay, or the whole buffer when the PCM will not say,
+ * plus this margin. */
+#define SHIM_UNDERFLOW_MARGIN_MS 20
 
 struct ring;
 
@@ -143,6 +147,10 @@ struct pa_stream {
     int reopen_pending;
     int reopen_wait;
     int drop_unsafe;
+    pa_time_event *underflow_ev;
+    int underflow_sent;
+    struct timeval dry_since;
+    unsigned dry_bound_ms;
 };
 
 struct ring *ring_new(size_t bytes);
@@ -183,6 +191,7 @@ pa_stream *shim_context_find_stream(pa_context *c, uint32_t idx);
 void shim_stream_maybe_yield(pa_stream *s);
 void shim_stream_update_timing(pa_stream *s);
 void shim_stream_set_output(pa_stream *s, int enable);
+void shim_stream_poll_error(pa_stream *s);
 void shim_stream_schedule_acquire(pa_stream *s);
 int shim_stream_acquire(pa_stream *s);
 pa_time_event *shim_after_ms(pa_mainloop_api *api, unsigned ms,

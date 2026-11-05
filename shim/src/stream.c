@@ -25,6 +25,8 @@ static int64_t stream_played_bytes(pa_stream *s);
 static void stream_set_state(pa_stream *s, pa_stream_state_t st);
 static int stream_open_pcm(pa_stream *s);
 static void stream_schedule_reopen(pa_stream *s);
+static void stream_arm_underflow(pa_stream *s);
+static void stream_cancel_underflow(pa_stream *s);
 
 static void
 adjust_attr(pa_stream *s, const pa_buffer_attr *in)
@@ -283,6 +285,7 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     got = ring_peek(s->rb, s->io_buf, (size_t)avail * fs);
     if (got < fs) {
         shim_stream_set_output(s, 0);
+        stream_arm_underflow(s);
         return;
     }
     got = (got / fs) * fs;
@@ -299,13 +302,132 @@ io_cb(pa_mainloop_api *a, pa_io_event *e, int fd, pa_io_event_flags_t events,
     }
     if (wr > 0) {
         ring_drop(s->rb, (size_t)wr * fs);
-        if (ring_readable(s->rb) < fs)
+        if (ring_readable(s->rb) < fs) {
             shim_stream_set_output(s, 0);
+            stream_arm_underflow(s);
+        }
         stream_clock_start(s);
         if (s->started_cb)
             s->started_cb(s, s->started_cb_userdata);
         s->started_cb = NULL;
     }
+}
+
+/*
+ * The poll reported the PCM in error: an underrun on a hardware device,
+ * a hangup, a dead descriptor. The mainloop hands it here before the I/O
+ * callback runs, so the recovery is the one stream_prepare does, with the
+ * position sampled, the clock frozen and the line in the diag, instead of
+ * a bare prepare nobody sees. The I/O callback follows with the PREPARED
+ * device: it writes if the ring has anything, otherwise it parks the
+ * output and arms the underflow.
+ */
+void
+shim_stream_poll_error(pa_stream *s)
+{
+    if (!s || !s->pcm)
+        return;
+    shim_log("poll error, pcm %s\n",
+             snd_pcm_state_name(snd_pcm_state(s->pcm)));
+    if (stream_prepare(s) < 0)
+        stream_schedule_reopen(s);
+}
+
+/*
+ * Underflow, as a Pulse server reports it: once per dry spell, after
+ * ALSA has played out what it held when the ring ran dry. The bound is
+ * the remaining delay, or the whole buffer when the device will not say,
+ * plus a margin, and the check is made again at that time. A device that
+ * has stopped, or reports nothing left, is dry; so is one that still
+ * claims to be running once the bound has passed, which is what an
+ * ioplug with a stuck delay looks like. Re-armed by the next write that
+ * queues data, and by flush. Never without a PCM.
+ */
+static unsigned
+stream_dry_bound_ms(pa_stream *s)
+{
+    snd_pcm_sframes_t delay = 0;
+    unsigned ms = 0;
+
+    if (s->pcm && s->ss.rate && snd_pcm_delay(s->pcm, &delay) == 0 && delay > 0)
+        ms = (unsigned)((uint64_t)delay * 1000 / s->ss.rate);
+    else
+        ms = (unsigned)(s->configured_sink_usec / 1000);
+    return ms + SHIM_UNDERFLOW_MARGIN_MS;
+}
+
+static long
+stream_dry_elapsed_ms(pa_stream *s)
+{
+    struct timeval now;
+
+    gettimeofday(&now, NULL);
+    return (now.tv_sec - s->dry_since.tv_sec) * 1000L +
+           (now.tv_usec - s->dry_since.tv_usec) / 1000L;
+}
+
+static void
+underflow_check(pa_mainloop_api *a, pa_time_event *e, const struct timeval *tv,
+                void *userdata)
+{
+    pa_stream *s = userdata;
+    snd_pcm_sframes_t delay = 0;
+    size_t fs;
+    int dry;
+
+    (void)tv;
+    if (a && a->time_free)
+        a->time_free(e);
+    if (s->underflow_ev == e)
+        s->underflow_ev = NULL;
+    if (s->underflow_sent || s->paused || !s->pcm || !s->rb)
+        return;
+    fs = shim_frame_size(&s->ss);
+    if (!fs || ring_readable(s->rb) >= fs)
+        return;
+    if (snd_pcm_state(s->pcm) != SND_PCM_STATE_RUNNING)
+        dry = 1;
+    else if (snd_pcm_delay(s->pcm, &delay) != 0 || delay <= 0)
+        dry = 1;
+    else
+        dry = stream_dry_elapsed_ms(s) >= (long)s->dry_bound_ms;
+    if (!dry) {
+        unsigned ms = (unsigned)((uint64_t)delay * 1000 / s->ss.rate) +
+                      SHIM_UNDERFLOW_MARGIN_MS;
+
+        s->underflow_ev = shim_after_ms(s->c->api, ms, underflow_check, s);
+        return;
+    }
+    s->underflow_sent = 1;
+    shim_log("underflow after %ld ms, pcm %s\n", stream_dry_elapsed_ms(s),
+             snd_pcm_state_name(snd_pcm_state(s->pcm)));
+    if (s->underflow_cb)
+        s->underflow_cb(s, s->underflow_cb_userdata);
+}
+
+static void
+stream_arm_underflow(pa_stream *s)
+{
+    snd_pcm_sframes_t delay = 0;
+
+    if (s->underflow_sent || s->underflow_ev || s->paused || !s->pcm)
+        return;
+    gettimeofday(&s->dry_since, NULL);
+    s->dry_bound_ms = stream_dry_bound_ms(s);
+    if (s->pcm && snd_pcm_delay(s->pcm, &delay) != 0)
+        delay = -1;
+    shim_log("ring dry, pcm %s delay=%ld bound=%ums\n",
+             snd_pcm_state_name(snd_pcm_state(s->pcm)), (long)delay,
+             s->dry_bound_ms);
+    s->underflow_ev = shim_after_ms(s->c->api, s->dry_bound_ms, underflow_check, s);
+}
+
+static void
+stream_cancel_underflow(pa_stream *s)
+{
+    if (s->underflow_ev && s->c->api->time_free)
+        s->c->api->time_free(s->underflow_ev);
+    s->underflow_ev = NULL;
 }
 
 static void *
@@ -588,6 +710,8 @@ stream_detach_io(pa_stream *s)
 static void
 stream_close_pcm(pa_stream *s, int keep_position)
 {
+    stream_cancel_underflow(s);
+    s->underflow_sent = 0;
     if (s->pcm) {
         stream_abandon_pcm(s->pcm);
         s->pcm = NULL;
@@ -957,6 +1081,7 @@ cork_run(pa_operation *op)
         stream_reset_acquire(s);
         s->want_running = 0;
         stream_clock_freeze(s);
+        stream_cancel_underflow(s);
         s->paused = 1;
         if (!shim_yield_requested() && s->pcm)
             shim_stream_set_output(s, 1);
@@ -1007,6 +1132,8 @@ flush_run(pa_operation *op)
     s->timing.write_index = 0;
     s->timing.read_index = 0;
     stream_clock_reset(s);
+    stream_cancel_underflow(s);
+    s->underflow_sent = 0;
     /*
      * Ring only. snd_pcm_drop/prepare on a "healthy" Motivo MultiRoom
      * handle still kills volumioOutput on a second seek. Committed
@@ -1052,6 +1179,7 @@ pa_stream_disconnect(pa_stream *s)
         s->c->api->time_free(s->acquire_ev);
         s->acquire_ev = NULL;
     }
+    stream_cancel_underflow(s);
     stream_release(s, 0);
     stream_set_state(s, PA_STREAM_TERMINATED);
     return 0;
@@ -1199,6 +1327,8 @@ pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
     }
     shim_stream_maybe_yield(s);
     if (n > 0) {
+        stream_cancel_underflow(s);
+        s->underflow_sent = 0;
         if (s->pcm && !s->paused)
             shim_stream_set_output(s, 1);
         else if (!s->pcm && s->want_running) {
@@ -1228,6 +1358,7 @@ pa_stream_unref(pa_stream *s)
         return;
     if (s->acquire_ev && s->c->api->time_free)
         s->c->api->time_free(s->acquire_ev);
+    stream_cancel_underflow(s);
     shim_context_remove_stream(s->c, s);
     pa_context_unref(s->c);
     ring_free(s->rb);

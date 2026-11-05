@@ -359,8 +359,16 @@ mainloop_iterate(pa_mainloop *m, int block)
             snd_pcm_poll_descriptors_revents(e->pcm, e->pollfd, 1, &revents);
         else
             revents = e->pollfd->revents;
+        /*
+         * An error on a PCM descriptor is an underrun on hardware, a
+         * hangup or a dead fd. The stream recovers it, with the position
+         * sampled and the line in the diag; a bare prepare here would
+         * leave the device PREPARED with nothing said and nothing told.
+         */
         if (revents & ~(POLLOUT | POLLIN)) {
-            if (e->pcm)
+            if (e->pcm && e->userdata)
+                shim_stream_poll_error(e->userdata);
+            else if (e->pcm)
                 snd_pcm_prepare(e->pcm);
         }
         if ((revents & (POLLOUT | POLLIN | POLLERR | POLLHUP)) && e->cb)

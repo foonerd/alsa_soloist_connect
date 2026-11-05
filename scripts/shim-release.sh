@@ -9,8 +9,10 @@
 #
 # A shim release is the tag shim-v<version> on this repository, built and
 # published by .github/workflows/shim-release.yml: one archive per
-# architecture, soloist-shim-<version>-<arch>.tar.gz, holding libpulse.so.0
-# and SOURCE_REVISION, with the digests in SHA256SUMS.
+# architecture, soloist-shim-<version>-<arch>.tar.gz, holding libpulse.so.0,
+# SOURCE_REVISION and LICENSE, with the digests in SHA256SUMS. The plugin
+# payload is the first two; LICENSE rides along for whoever unpacks the
+# archive on its own.
 #
 # version  prints the shim version, CMake's VERSION in shim/CMakeLists.txt.
 # archive  takes out/<arch>/ as docker/run-docker-shim.sh leaves it and writes
@@ -97,8 +99,9 @@ archive() {
   [ -z "$(git status --porcelain -- shim)" ] || die "shim/ has uncommitted changes; an archive is of a commit"
   mkdir -p dist
   tarball=dist/soloist-shim-$v-$arch.tar.gz
-  tar -C "$out" --sort=name --owner=0 --group=0 --numeric-owner \
-      --mtime="@$(git log -1 --format=%ct)" -cf - "${PAYLOAD[@]}" | gzip -n -9 > "$tarball"
+  tar --sort=name --owner=0 --group=0 --numeric-owner \
+      --mtime="@$(git log -1 --format=%ct)" -cf - \
+      -C "$out" "${PAYLOAD[@]}" -C "$ROOT" LICENSE | gzip -n -9 > "$tarball"
   echo "shim-release: $tarball: $(stat -c %s "$tarball") bytes, sha256 $(sha256sum "$tarball" | cut -d' ' -f1), from $rev"
 }
 

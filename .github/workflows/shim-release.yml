@@ -78,7 +78,7 @@ jobs:
           version="${GITHUB_REF_NAME#shim-v}"
           {
             printf 'Pulse shim %s: `libpulse.so.0` for Spotify Soloist, built from `shim/` at %s in Debian 12 containers. Runtime link is `libasound` and libc only.\n\n' "$version" "$(git rev-parse HEAD)"
-            printf 'One archive per userspace, each holding `libpulse.so.0` and `SOURCE_REVISION`: `amd64` (x86_64), `arm64` (aarch64), `armhf` (armv7l). `SHA256SUMS` carries their digests. The plugin takes its shim from a release of this line; see `shim/README.md`.\n'
+            printf 'One archive per userspace, each holding `libpulse.so.0`, `SOURCE_REVISION` and `LICENSE`: `amd64` (x86_64), `arm64` (aarch64), `armhf` (armv7l). `SHA256SUMS` carries their digests. The contract, the environment and how to install it on any Linux are in `shim/README.md`; the changes in `shim/CHANGELOG.md`.\n'
             cat .github/release-footer.md
           } > dist/notes.md
       # Published as a pre-release, as the plugin is: promoted by hand once

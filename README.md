@@ -24,7 +24,7 @@ This document is for people building or modifying the plugin.
 Soloist has no ALSA backend. It plays through PipeWire, or falls back to PulseAudio. Volumio 4 has neither.
 
 The plugin therefore ships a purpose-driven `libpulse.so.0` from [`shim/`](shim/) and launches Soloist with `LD_LIBRARY_PATH` pointed at it.
-The library implements the 47 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. The outer `plug:` converts; the shim does not pick S16/S32.
+The library implements the 48 `pa_*` symbols Soloist `dlsym`s ([`shim/ABI.txt`](shim/ABI.txt)) and writes FLOAT32 into `plug:volumio`, so Volumio's volume control, DSP and other AAMPP contributions all apply. The outer `plug:` converts; the shim does not pick S16/S32.
 
 It is not [apulse](https://github.com/i-rinat/apulse) and not a Pulse server. Library version is **0.2.10**, release `shim-v0.2.10`: the source is this repository, the plugin tree carries the release named in `soloist_connect/alsa-lib/RELEASE`, and `SOURCE_REVISION` is the git commit that produced each shipped `.so`.
 
@@ -47,7 +47,7 @@ PulseAudio is never installed, and the system glibc is never modified.
 
 | Path | What |
 |---|---|
-| `shim/` | Pulse shim 0.2.10 source. See [`shim/README.md`](shim/README.md). The plugin ships the release named in `soloist_connect/alsa-lib/RELEASE`. |
+| `shim/` | Pulse shim 0.2.11 source, its contract for any ALSA host, and its changelog. See [`shim/README.md`](shim/README.md). The plugin ships the release named in `soloist_connect/alsa-lib/RELEASE`. |
 | `soloist_connect/` | The Volumio plugin. This is what gets zipped and installed. |
 | `soloist_connect/README.md` | User-facing documentation, ships with the package. |
 | `soloist_connect/LICENSE` | MIT, ships with the package. |
@@ -123,7 +123,7 @@ The build images carry `libasound2-dev` and a toolchain, and nothing else. glib 
 ### Shim releases
 
 The shim has its own release line, separate from the plugin's. A tag `shim-v<version>` runs [`shim-release.yml`](.github/workflows/shim-release.yml): the three architectures are built from that commit by `docker/run-docker-shim.sh` on GitHub's runners, the ARM containers under QEMU as on a workstation, each library passes the ldd gate, the regression tests run in the same container where the source carries them, and one GitHub release carries `soloist-shim-<version>-<arch>.tar.gz` for `amd64`, `arm64` and `armhf` with their digests in `SHA256SUMS`.
-Each archive holds `libpulse.so.0` and `SOURCE_REVISION`.
+Each archive holds `libpulse.so.0`, `SOURCE_REVISION` and `LICENSE`; the plugin's payload is the first two.
 The tag must name the `VERSION` in `shim/CMakeLists.txt` and the heading of `shim/README.md`.
 The release is published as a pre-release and promoted by hand; run from the Actions tab, the workflow builds everything and publishes nothing.
 `ci.yml` compiles the amd64 library on every push and pull request, so a change under `shim/` is built before it is tagged.

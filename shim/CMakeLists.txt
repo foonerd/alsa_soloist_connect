@@ -29,7 +29,7 @@ target_link_libraries(pulse PRIVATE ${ALSA_LIBRARIES} m pthread)
 set_target_properties(pulse PROPERTIES
     OUTPUT_NAME pulse
     SOVERSION 0
-    VERSION 0.2.10
+    VERSION 0.2.11
     LINK_FLAGS "-Wl,--version-script=${CMAKE_SOURCE_DIR}/pulse.sym"
 )
 
@@ -57,5 +57,6 @@ if(BUILD_TESTING)
     add_test(NAME timing-lifecycle COMMAND shim_timing_test lifecycle)
     add_test(NAME timing-precision COMMAND shim_timing_test precision)
     add_test(NAME timing-drain COMMAND shim_timing_test drain)
-    set_tests_properties(timing-completion timing-lifecycle timing-precision timing-drain PROPERTIES TIMEOUT 30)
+    add_test(NAME timing-dryspell COMMAND shim_timing_test dryspell)
+    set_tests_properties(timing-completion timing-lifecycle timing-precision timing-drain timing-dryspell PROPERTIES TIMEOUT 30)
 endif()

@@ -189,13 +189,15 @@ shim_playback_device(void)
     return (d && d[0]) ? d : "plug:volumio";
 }
 
+/* The PCM is released when the yield file appears. With no path set there
+ * is no yield: the PCM stays open until the stream disconnects. */
 int
 shim_yield_requested(void)
 {
     const char *p = getenv("APULSE_YIELD_PATH");
 
     if (!p || !p[0])
-        p = SHIM_YIELD_DEFAULT;
+        return 0;
     return access(p, F_OK) == 0;
 }
 
