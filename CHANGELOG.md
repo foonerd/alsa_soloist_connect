@@ -2,9 +2,13 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.8] - 2026-11-05
+
+- **The dry-spell check no longer cuts a card that is still playing.** The Pulse shim moves to 0.2.12, release `shim-v0.2.12`. 0.2.11 decided at a fixed moment and could report the card dry while it still held audio, and waited a whole buffer before looking at a card that had said it was empty. The shim now waits for what the card says it still holds, looks again while that figure shrinks, and reports only when the card has stopped, is empty, or its figure has stopped moving. Found in review of 0.2.11 before any confirmation on the reporters' hardware. Pre-release until the mid-track case has been heard on that hardware and a non-gapless track end on Volumio.
+
 ## [0.9.7] - 2026-11-05
 
-- **Playback no longer stalls when Soloist stops supplying audio mid-track.** The Pulse shim moves to 0.2.11, release `shim-v0.2.11`. When the daemon stops writing for long enough that the card runs dry, the shim now tells it so, once, the way a PulseAudio server would, and the daemon rebuffers and resumes; before, the daemon was told its audio had all played and never told it had run out, and it waited forever with the card stopped. A card underrun is recovered and logged where it used to be absorbed in silence. Reported on piCorePlayer by ludoo in issue 1 after 0.2.10; the notification is the second half of the patch he posted there. The shim's own README now documents its use on any ALSA system.
+- **The daemon is told when the card runs dry.** The Pulse shim moves to 0.2.11, release `shim-v0.2.11`. When the daemon stops writing for long enough that the card runs out, the shim now reports an underflow to it, once, the way a PulseAudio server would; before, the daemon was told its audio had all played and never told it had run out, and could wait forever with the card stopped. A card underrun is recovered and logged where it used to be absorbed in silence. Reported on piCorePlayer by ludoo in issue 1 after 0.2.10; the notification is the second half of the patch he posted there. Confirmed on the bench on a hardware PCM at the end of a queue; not yet confirmed mid-track on the reporter's hardware, and superseded by 0.9.8 before that confirmation. The shim's own README now documents its use on any ALSA system.
 
 ## [0.9.6] - 2026-11-04
 
