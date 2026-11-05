@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.9] - 2026-11-05
+
+- **A card whose delay figure stepped up is still playing.** The Pulse shim moves to 0.2.13, release `shim-v0.2.13`. The delay a card reports is a pointer estimate and can rise by a frame or two while the card is consuming; 0.2.12 read any figure that had not fallen as a stuck software plugin and could report the card dry early. Only a figure exactly where it was is stuck now. Found in review of 0.2.12 before anyone heard it. Pre-release until the mid-track case has been heard on the reporter's hardware and a non-gapless track end on Volumio.
+
 ## [0.9.8] - 2026-11-05
 
 - **The dry-spell check no longer cuts a card that is still playing.** The Pulse shim moves to 0.2.12, release `shim-v0.2.12`. 0.2.11 decided at a fixed moment and could report the card dry while it still held audio, and waited a whole buffer before looking at a card that had said it was empty. The shim now waits for what the card says it still holds, looks again while that figure shrinks, and reports only when the card has stopped, is empty, or its figure has stopped moving. Found in review of 0.2.11 before any confirmation on the reporters' hardware. Pre-release until the mid-track case has been heard on that hardware and a non-gapless track end on Volumio.

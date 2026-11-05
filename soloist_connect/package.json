@@ -1,6 +1,6 @@
 {
   "name": "soloist_connect",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "description": "Spotify Connect on Volumio 4 via Spotify Soloist, playing through pcm.volumio (ALSA, no Pulse)",
   "main": "index.js",
   "scripts": {
@@ -19,8 +19,8 @@
     "os": [
       "bookworm"
     ],
-    "details": "Stable. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.12), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
-    "changelog": "0.9.8: The Pulse shim is 0.2.12: the dry-spell check waits for what the card still holds and no longer reports the card dry while it is playing. 0.9.7: The Pulse shim is 0.2.11: the daemon is told once the card has run dry, so a mid-track stall can recover; a card underrun is recovered and logged. 0.9.6: The Pulse shim is 0.2.10: a track's last frame is reported exactly and the next track starts on its own."
+    "details": "Stable. Turns Volumio 4 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.13), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. This repository is the cutting-edge line; an accepted build is published to the store separately.",
+    "changelog": "0.9.9: The Pulse shim is 0.2.13: a card whose delay figure stepped up is still playing and is not reported dry early. 0.9.8: The Pulse shim is 0.2.12: the dry-spell check waits for what the card still holds. 0.9.7: The Pulse shim is 0.2.11: the daemon is told once the card has run dry, so a mid-track stall can recover; a card underrun is recovered and logged."
   },
   "engines": {
     "node": ">=20",
