@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.10] - 2026-11-18
+
+- **A Volumio playlist keeps advancing after the first Spotify row.** The paused state Soloist sends for a row that has already ended was compared with the next row and taken as another session taking over, so queue mode ended and Spotify's own queue owned every row after the first. That tail is now the remainder of the finished row and is ignored. A play of a different item still leaves queue mode.
+
 ## [0.9.9] - 2026-11-05
 
 - **A card whose delay figure stepped up is still playing.** The Pulse shim moves to 0.2.13, release `shim-v0.2.13`. The delay a card reports is a pointer estimate and can rise by a frame or two while the card is consuming; 0.2.12 read any figure that had not fallen as a stuck software plugin and could report the card dry early. Only a figure exactly where it was is stuck now. Found in review of 0.2.12 before anyone heard it. Pre-release until the mid-track case has been heard on the reporter's hardware and a non-gapless track end on Volumio.

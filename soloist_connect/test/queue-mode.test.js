@@ -541,6 +541,61 @@ async function main() {
     check('local takeover reports no stop', pushed.length === 0);
   }
 
+  // 18b. the terminal state of a row already handed back, after the next
+  // row is armed. Soloist emits paused at the duration of the finished
+  // track once core has called clearAddPlayTrack for the following row.
+  // That is not a session move. Treating it as one left queue mode and
+  // Spotify's queue owned every row after the first.
+  {
+    const p = newPlugin();
+    let takeovers = 0;
+    p.takeOverPlayback = function () { takeovers++; };
+    const sm = armQueue(p, OURS);
+    p.cacheItem(item);
+    p.clearAddPlayTrack({ uri: OURS, service: 'soloist_connect' });
+    p.state.duration = 175;
+    pushed.length = 0;
+    const ended = p.checkQueueRow(evt('buffering', OURS, 175301, OURS, item), OURS);
+    check('finished row consumed', ended === true);
+    check('finished row remembered', p.endedQueueUri === OURS);
+    check('finished row left queue mode', p.queueMode === false);
+
+    sm.currentPosition = 1;
+    sm.playQueue.arrayQueue.push({
+      uri: ROLLED, service: 'soloist_connect', duration: 142,
+    });
+    p.clearAddPlayTrack({ uri: ROLLED, service: 'soloist_connect' });
+    check('next row armed', p.queueMode === true && p.queueUri === ROLLED);
+    check('finished uri kept across the arm', p.endedQueueUri === OURS);
+
+    pushed.length = 0;
+    const tail = p.checkQueueRow(evt('paused', OURS, 175301, OURS, item, true), OURS);
+    check('ended row tail consumed', tail === true);
+    check('ended row tail stays on the new row',
+      p.queueMode === true && p.queueUri === ROLLED);
+    check('ended row tail does not reclaim', takeovers === 0, String(takeovers));
+    p.handleEvent(evt('paused', OURS, 175301, OURS, item, true));
+    check('ended row tail is not published', pushed.length === 0,
+      JSON.stringify(pushed[0] || null));
+
+    const stillBuffering = p.checkQueueRow(
+      evt('buffering', OURS, 175301, OURS, item, true), OURS);
+    check('ended row still buffering is consumed', stillBuffering === true);
+    check('ended row still buffering stays in queue mode', p.queueMode === true);
+
+    pushed.length = 0;
+    const ours = p.checkQueueRow(evt('playing', ROLLED, 500, ROLLED, rolledItem), ROLLED);
+    check('new row playing is not the ended tail', ours === false);
+    check('new row playing stays in queue mode', p.queueMode === true && p.queueUri === ROLLED);
+
+    p.state.status = 'play';
+    const replay = p.checkQueueRow(evt('playing', OURS, 0, OURS, item, true), OURS);
+    check('replay of the ended row is not consumed', replay === false);
+    check('replay of the ended row leaves queue mode', p.queueMode === false);
+    check('replay of the ended row reclaims', takeovers === 1, String(takeovers));
+    check('replay of the ended row reports no stop', pushed.length === 0);
+  }
+
   // 19. the settings gate
   {
     const off = newPlugin({ queue_playback: false });
