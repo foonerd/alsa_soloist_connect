@@ -596,6 +596,58 @@ async function main() {
     check('replay of the ended row reports no stop', pushed.length === 0);
   }
 
+  // 18c. Next stops the current service before core plays the following row.
+  // The pause acknowledgement arrives after that row is armed, mid-track.
+  // stop() has to remember the row it stopped, or the same tail that 18b
+  // ignores is taken as another session and the next press sends skip_next.
+  {
+    const p = newPlugin();
+    let takeovers = 0;
+    p.takeOverPlayback = function () { takeovers++; };
+    const sm = armQueue(p, OURS);
+    p.clearAddPlayTrack({ uri: OURS, service: 'soloist_connect' });
+    p.state.status = 'play';
+    logs.length = 0;
+    p.stop();
+    check('next stop left queue mode', p.queueMode === false);
+    check('next stop remembered the row', p.endedQueueUri === OURS);
+    check('next stop still pauses',
+      logs.some((l) => l.indexOf('"command":"pause"') !== -1), logs.join(' | '));
+    check('next stop still yields', logs.indexOf('yield requested') !== -1);
+
+    sm.currentPosition = 1;
+    sm.playQueue.arrayQueue.push({
+      uri: ROLLED, service: 'soloist_connect', duration: 142,
+    });
+    p.clearAddPlayTrack({ uri: ROLLED, service: 'soloist_connect' });
+    check('row after next is armed', p.queueMode === true && p.queueUri === ROLLED);
+    check('stopped uri kept across the arm', p.endedQueueUri === OURS);
+
+    pushed.length = 0;
+    const tail = p.checkQueueRow(evt('paused', OURS, 29257, OURS, item, true), OURS);
+    check('mid-track pause of the stopped row is consumed', tail === true);
+    check('mid-track pause stays on the new row',
+      p.queueMode === true && p.queueUri === ROLLED);
+    check('mid-track pause does not reclaim', takeovers === 0, String(takeovers));
+    p.handleEvent(evt('paused', OURS, 29257, OURS, item, true));
+    check('mid-track pause is not published', pushed.length === 0,
+      JSON.stringify(pushed[0] || null));
+
+    p.queueMode = true;
+    p.queueUri = OURS;
+    p.endedQueueUri = '';
+    p.ignoreStopEvent = true;
+    p.stop();
+    check('volatile stop echo does not remember a row',
+      p.endedQueueUri === '' && p.queueMode === true && p.queueUri === OURS);
+
+    p.ignoreStopEvent = false;
+    p.queueMode = false;
+    p.endedQueueUri = OURS;
+    p.stop();
+    check('stop outside queue mode clears the ended row', p.endedQueueUri === '');
+  }
+
   // 19. the settings gate
   {
     const off = newPlugin({ queue_playback: false });

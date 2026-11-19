@@ -2,6 +2,10 @@
 
 All notable changes to Spotify Soloist Connect are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. From 0.9.3 each version is also assembled as a best effort Volumio 3 (buster) build, carrying the same version and the same changes; see `buster/README.md`.
 
+## [0.9.11] - 2026-11-19
+
+- **Next keeps a Volumio playlist in queue mode.** The Next button stops the current service before core plays the following row, and that stop was forgetting the row. The pause Soloist then reports for it arrived after the next row was armed and was taken as another session, so queue mode ended and the following Next sent `skip_next` and paused. The stopped row is now remembered, the same way a row that plays to the end already is.
+
 ## [0.9.10] - 2026-11-18
 
 - **A Volumio playlist keeps advancing after the first Spotify row.** The paused state Soloist sends for a row that has already ended was compared with the next row and taken as another session taking over, so queue mode ended and Spotify's own queue owned every row after the first. That tail is now the remainder of the finished row and is ignored. A play of a different item still leaves queue mode.

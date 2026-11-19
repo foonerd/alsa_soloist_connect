@@ -1,6 +1,6 @@
 {
   "name": "soloist_connect",
-  "version": "0.9.10",
+  "version": "0.9.11",
   "description": "Spotify Connect on Volumio 3 via Spotify Soloist, playing through pcm.volumio (ALSA, no Pulse). Best effort build.",
   "main": "index.js",
   "scripts": {
@@ -20,7 +20,7 @@
       "buster"
     ],
     "details": "Best effort build for Volumio 3, offered as-is and tested by the community. Turns Volumio 3 into a Spotify Connect device using Spotify Soloist. Audio goes through pcm.volumio via an in-tree Pulse shim (0.2.13), with no PulseAudio or PipeWire. Requires your own Soloist API key from the Spotify for Developers dashboard. Unofficial and not affiliated with Spotify AB. The Soloist binary is downloaded from Spotify at install time and is not bundled. Installed from the GitHub release, not from the plugin store.",
-    "changelog": "0.9.10: A finished playlist row no longer drops queue mode when Soloist reports that row as paused, so the Volumio playlist keeps advancing."
+    "changelog": "0.9.11: Next keeps the Volumio playlist in queue mode. The pause from the row just stopped is no longer taken as another session."
   },
   "engines": {
     "node": ">=14 <20",

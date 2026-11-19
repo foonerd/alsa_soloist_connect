@@ -3201,7 +3201,13 @@ SoloistConnect.prototype.stop = function () {
     this.logger.info('SoloistConnect: ignoring stop echo from volatile setup');
     return libQ.resolve();
   }
+  // Next stops this service and then plays the following row. The pause
+  // acknowledgement is the remainder of the row just stopped. leaveQueueMode
+  // clears that memory, so it is written back, the same as endQueueRow.
+  // A stop while queue mode is off forgets any leftover row.
+  const ended = this.queueMode ? this.queueUri : '';
   this.leaveQueueMode('core stopped this service', false);
+  this.endedQueueUri = ended;
   this.clearPendingSeek();
   this.clearInactiveHold();
   this.clearQualityRetry();
