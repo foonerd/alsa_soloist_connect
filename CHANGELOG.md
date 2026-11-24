@@ -4,7 +4,7 @@ All notable changes to Spotify Soloist Connect are recorded here. The format fol
 
 ## [0.9.11] - 2026-11-19
 
-- **Next keeps a Volumio playlist in queue mode.** The Next button stops the current service before core plays the following row, and that stop was forgetting the row. The pause Soloist then reports for it arrived after the next row was armed and was taken as another session, so queue mode ended and the following Next sent `skip_next` and paused. The stopped row is now remembered, the same way a row that plays to the end already is.
+- **Next keeps a Volumio playlist in queue mode.** The Next button stops the current service before core plays the following row, and that stop was forgetting the row. The pause Soloist then reports for it arrived after the next row was armed and was taken as another session, so queue mode ended and the following Next sent `skip_next` and paused. The stopped row is now remembered, the same way a row that plays to the end already is. Smoke tested and submitted to the store on 2026-11-24. Store listing is armhf.
 
 ## [0.9.10] - 2026-11-18
 
@@ -12,7 +12,7 @@ All notable changes to Spotify Soloist Connect are recorded here. The format fol
 
 ## [0.9.9] - 2026-11-05
 
-- **A card whose delay figure stepped up is still playing.** The Pulse shim moves to 0.2.13, release `shim-v0.2.13`. The delay a card reports is a pointer estimate and can rise by a frame or two while the card is consuming; 0.2.12 read any figure that had not fallen as a stuck software plugin and could report the card dry early. Only a figure exactly where it was is stuck now. Found in review of 0.2.12 before anyone heard it. Pre-release until the mid-track case has been heard on the reporter's hardware and a non-gapless track end on Volumio.
+- **A card whose delay figure stepped up is still playing.** The Pulse shim moves to 0.2.13, release `shim-v0.2.13`. The delay a card reports is a pointer estimate and can rise by a frame or two while the card is consuming; 0.2.12 read any figure that had not fallen as a stuck software plugin and could report the card dry early. Only a figure exactly where it was is stuck now. Found in review of 0.2.12 before anyone heard it. Smoke tested with 0.9.11 and taken to the store on 2026-11-24.
 
 ## [0.9.8] - 2026-11-05
 
@@ -85,6 +85,10 @@ All notable changes to Spotify Soloist Connect are recorded here. The format fol
 
 - `soloist.service` is owned by the plugin only.
 
+## [0.8.1] - 2026-08-27
+
+- Software mixer whose `pcm.volumio` slave is already `softvolume` opens `softvolume`. The start line names the plugin, the shim, and `SOURCE_REVISION`.
+
 ## [0.8.0] - 2026-08-25
 
 - First beta, with a safe Soloist binary update.
@@ -117,6 +121,98 @@ All notable changes to Spotify Soloist Connect are recorded here. The format fol
 
 - Spotify tracks play from a Volumio mixed list.
 
-## [0.6.x] - 2026-08-18 to 2026-08-23
+## [0.6.19] - 2026-08-23
 
-- The in-tree Pulse shim replaces apulse; the ALSA write path, buffering, seek and yield behaviour settled on the shipping shim 0.2.x; the API key hidden from `ps` after the first Pulse call.
+- A busy card waits instead of failing the first open. A corked connect does not open the PCM. Tidal Connect is asked to release a card it holds. Shim 0.2.8.
+
+## [0.6.18] - 2026-08-23
+
+- Peppy metering restarts only when the running device does not match `plug:spotify` or `plug:volumio`.
+
+## [0.6.17] - 2026-08-23
+
+- Skip no longer keeps the previous track's quality label. Quality retry wait and retry count are settings.
+
+## [0.6.16] - 2026-08-23
+
+- Flush drops the Pulse ring only. A healthy PCM is not re-prepared. Seek coalesce and inactive hold are settings.
+
+## [0.6.15] - 2026-08-23
+
+- A prepare that left the switcher handle dead reopens on flush. A healthy graph is still dropped and prepared. Changed in 0.6.16.
+
+## [0.6.14] - 2026-08-22
+
+- The ring is `tlength` plus 64 KiB so a 32 KiB Soloist write is not truncated.
+
+## [0.6.13] - 2026-08-22
+
+- The shim writes FLOAT32 at the client rate into `plug:volumio`. Exact rate or fail. I/O is capped at two periods.
+
+## [0.6.12] - 2026-08-22
+
+- `--api-key` and `API_KEY` are removed from `ps` and logsubmit.
+
+## [0.6.11] - 2026-08-22
+
+- A 32 KiB preroll write that does not fit the ring is no longer rejected whole.
+
+## [0.6.10] - 2026-08-22
+
+- The shim converts FLOAT32 to S16 before `writei`. Superseded by 0.6.13.
+
+## [0.6.9] - 2026-08-22
+
+- 0.6.4 through 0.6.8 are reverted. The audio path is 0.6.3 again.
+
+## [0.6.8] - 2026-08-22
+
+- Pace measurement ignored the first ALSA buffer. Superseded by 0.6.9.
+
+## [0.6.7] - 2026-08-22
+
+- Consumer rate measured from frames versus wall time. Superseded by 0.6.9.
+
+## [0.6.6] - 2026-08-22
+
+- Convert when the measured write pace is not the track rate. A leftover yield file is cleared. Superseded by 0.6.9.
+
+## [0.6.5] - 2026-08-22
+
+- ALSA resample turned back on after 44.1 lossless played fast. Superseded by 0.6.9.
+
+## [0.6.4] - 2026-08-22
+
+- FLOAT32 converted to S24 before `writei`. Superseded by 0.6.9.
+
+## [0.6.3] - 2026-08-21
+
+- apulse replaced by the in-tree Pulse shim. The apulse build path is retired.
+
+## [0.6.2] - 2026-08-21
+
+- Playback cache can live in RAM. Metadata is shown when taking the session. Diagnostics follow Verbose logging.
+
+## [0.6.1] - 2026-08-21
+
+- Verbose logging works. The seek bar does not publish every second. Stale crashpad locks are cleared at start.
+
+## [0.6.0] - 2026-08-20
+
+- PeppyMeter and Spectrum on Bookworm, through the metered PCM when the screensaver asks.
+
+## [0.5.0] - 2026-08-20
+
+- Output Trim, for PeppyMeter needle deflection.
+
+## [0.4.0] - 2026-08-20
+
+- The meter no longer follows master volume. Soloist is released after the Spotify app closes.
+
+## [0.3.0] - 2026-08-18
+
+- Format negotiation and response lag.
+
+## Pre-alpha - 2026-08-17
+
+- First working builds on rPi4, rPi5 and x86.
